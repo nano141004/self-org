@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "self-org"
+version = "0.1.0"
+description = "Personal second-brain CLI agent that classifies free-form thoughts into a markdown wiki."
+readme = "CLAUDE.md"
+requires-python = ">=3.11"
+authors = [{ name = "self-org" }]
+dependencies = [
+    "typer>=0.12",
+    "python-frontmatter>=1.1",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "rich>=13.7",
+    "python-ulid>=2.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-mock>=3.14",
+    "pytest-cov>=5.0",
+]
+
+[project.scripts]
+brain = "brain.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["brain"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "live: tests that hit a real LLM provider (excluded by default)",
+]
