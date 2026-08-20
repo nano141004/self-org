@@ -1,27 +1,29 @@
-# self-org
+# pal
 
-A personal CLI second-brain. Dump free-form thoughts; the agent classifies them into a markdown wiki whose taxonomy grows organically.
+A personal private assistant — a headless, local-first knowledge engine. Dump
+free-form thoughts; the engine classifies them into a markdown wiki whose
+taxonomy grows organically, and exposes the result to AI clients via MCP.
 
 Three operations:
 
-- `brain add "<text>"` — capture and file one thought
-- `brain lint` — weekly reorganize, fold raw notes into concept pages
-- `brain ask "<question>"` — agentic retrieval with citations
+- `pal add "<text>"` — capture and file one thought (URLs route to reading-list)
+- `pal lint` — weekly reorganize, fold raw notes into concept pages
+- `pal ask "<question>"` — agentic retrieval with citations
 
 ## Status
 
-**Phase 1 of 6 complete** — storage skeleton, no LLM yet.
+**Restructuring.** The repo is being rebuilt from the old `brain` CLI into the
+`pal` engine (MCP-native, engine-first API). See `docs/PRD.md` for the plan.
 
-| Phase | Scope                                       | Status      |
-|-------|---------------------------------------------|-------------|
-| 1     | Storage skeleton — files, IDs, git          | done       |
-| 2     | LLM ingest — full `brain add` end-to-end    | next       |
-| 3     | `brain lint` — reorganize, fold             | sketched    |
-| 4     | `brain ask` — agentic retrieval + synthesis | sketched    |
-| 5     | Cron + polish                               | sketched    |
-| 6     | Embedding retriever                         | deferred    |
-
-What works today: `brain init` scaffolds a brain directory; `brain add "<text>"` writes a frontmatter markdown note and commits. Classification is via `--into <path>` flag or defaults to `inbox/`. The LLM-driven classifier lands in Phase 2.
+| Phase | Scope                                       | Status     |
+|-------|---------------------------------------------|------------|
+| 1     | Restart — `pal/` package, storage ported, engine + MCP + CLI | spec'd |
+| 2     | LLM ingest — deterministic router + LiteLLM triage | spec'd |
+| 3     | `pal lint` — reorganize, fold, contradictions | sketched   |
+| 4     | `pal ask` — agentic retrieval + synthesis    | sketched   |
+| 5     | Hybrid search — `.index/`, FTS + embeddings  | sketched   |
+| 6     | Gateways & daemons — Telegram, voice, digests | sketched  |
+| 7     | Standalone app — GUI/desktop/web on the engine | future   |
 
 ## Quick start
 
@@ -34,26 +36,33 @@ source .venv/Scripts/activate       # Windows (Git Bash)
 # or: source .venv/bin/activate     # macOS / Linux
 
 pip install -e ".[dev]"
-brain init
-brain add "test thought"
-brain add "another one" --into experiments/cli
+pal init
+pal add "test thought"
+pal add "another one" --into experiments/cli
 ```
 
-Brain data lives at `~/brain/` by default; override with `BRAIN_DIR` (see `.env.example`).
+Brain data lives at `~/brain/` by default; override with `BRAIN_DIR` (see
+`.env.example`).
 
 ## Architecture
 
 Three layers, mirroring [Karpathy's LLM wiki gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f):
 
-1. **Raw** (`raw/YYYY/MM/DD/`) — fleeting notes, immutable after write
-2. **Wiki** (`wiki/<topic>/...`) — synthesized concept pages, owned by `lint`
-3. **Schema** (`INDEX.md` / `LOG.md` / `SCHEMA.md`) — what the agent reads on every op
+1. **Human layer** — canonical markdown (`raw/`, `wiki/`, `reading-list/`,
+   `inbox/`) with strict YAML frontmatter, versioned by git
+2. **Machine layer** — `.index/` derived cache (FTS + embeddings), regenerable
+   via `pal reindex`
+3. **Interface layer** — `pal` CLI and FastMCP tools over the same engine API
 
-Stable IDs (ULID) in YAML frontmatter; filenames are descriptive but disposable. Every operation produces a single git commit, so the brain dir's `git log` is the time machine.
+**Engine-first:** every capability is a plain function in `pal/engine/`. CLI and
+MCP never contain logic; a future app just imports the engine.
+
+Stable IDs (ULID) in YAML frontmatter; filenames are descriptive but disposable.
+Every operation produces a single git commit, so the brain dir's `git log` is
+the time machine.
 
 ## Tests
 
 ```bash
-pytest                  # 43 tests
-pytest --cov=brain      # ~96% coverage on storage/
+pytest
 ```
