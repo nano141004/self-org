@@ -39,6 +39,12 @@ pal/
 │   ├── query.py          # query(), assemble_context()
 │   ├── reading_list.py   # list_items(), set_status()
 │   └── lint.py           # run_lint()
+├── agent/                # cross-cutting LLM abstraction
+│   ├── llm.py            # LiteLLM wrapper, fallback chain
+│   └── prompts.py        # SCHEMA-aware prompt builders
+├── retrieval/            # cross-cutting retrieval interface
+│   ├── base.py           # Retriever protocol
+│   └── index_retriever.py# v1: read INDEX.md
 ├── storage/              # ported as-is from brain/storage/
 │   ├── ids.py
 │   ├── paths.py
@@ -57,6 +63,8 @@ pal/
 - `mcp` and `cli` never contain business logic — only argument marshalling and
   output formatting.
 - `storage` is imported only by `engine` (and tests).
+- `agent` and `retrieval` are infrastructure imported by `engine`; they never
+  import `engine`, `mcp`, or `cli`.
 
 Rationale: a future standalone app (GUI/desktop/web) imports `pal.engine`
 directly with zero rework. CLI and MCP remain swappable interfaces.

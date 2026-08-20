@@ -78,6 +78,12 @@ pal/                              # the Python package
 │   ├── query.py                  #   query(), assemble_context()
 │   ├── reading_list.py           #   list_items(), set_status()
 │   └── lint.py                   #   run_lint()
+├── agent/                        # cross-cutting LLM abstraction
+│   ├── llm.py                    #   LiteLLM wrapper, fallback chain
+│   └── prompts.py                #   SCHEMA-aware prompt builders
+├── retrieval/                    # cross-cutting retrieval interface
+│   ├── base.py                   #   Retriever protocol
+│   └── index_retriever.py        #   v1: read INDEX.md
 ├── storage/                      # ported from brain/storage/ (Phase 1 code)
 │   ├── ids.py  paths.py  schema.py  files.py  git.py
 ├── mcp/
