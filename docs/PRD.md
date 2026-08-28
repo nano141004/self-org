@@ -144,6 +144,35 @@ reorganization renames freely because cross-references use `id`.
 | VCS integration      | subprocess to git CLI      | Simple; avoids GitPython dep                |
 | Testing              | pytest                     | Standard                                    |
 
+### 4.7 Interface surface
+
+**MCP tools** (FastMCP, stdio transport). Each tool ships in the phase that
+makes it functional and is **never exposed as a stub** — an MCP client must
+never be able to call a tool that raises "not implemented":
+
+| Tool              | Input                                  | Output                                   | Ships in |
+|-------------------|----------------------------------------|------------------------------------------|----------|
+| `add_to_brain`    | content, source_url?, category_hint?   | status ("stored"/"inbox"), path, id      | Phase 1  |
+| `get_reading_list`| topic?, status? ("unread"/"reading"/"archived") | [{title, url, summary, date_added}] | Phase 1 (minimal) |
+| `run_lint`        | —                                      | changes, recommendations                 | Phase 3  |
+| `query_brain`     | query, max_results?, filters?          | [{id, path, snippet, summary}]           | Phase 4  |
+| `assemble_context`| topic_keywords[]                       | formatted_markdown_context               | Phase 4  |
+
+**CLI** (Typer, thin wrapper over the same engine):
+
+| Command          | Ships in | Notes                                        |
+|------------------|----------|----------------------------------------------|
+| `pal init`       | Phase 1  |                                              |
+| `pal add`        | Phase 1  | LLM triage arrives Phase 2a                  |
+| `pal lint`       | Phase 1* | prints "coming in Phase 3" until then        |
+| `pal ask`        | Phase 1* | prints "coming in Phase 4" until then        |
+| `pal reindex`    | Phase 1* | no-op until Phase 5                          |
+
+(*) Commands exist from Phase 1 so the interface shape is stable, but print a
+clear "coming in Phase N" message until their phase lands. MCP exposure follows
+the stricter rule above; the CLI can afford early placeholders because a human
+is reading the output.
+
 ---
 
 ## 5. Phase plan
@@ -151,12 +180,17 @@ reorganization renames freely because cross-references use `id`.
 | Phase | Scope                                       | Status       |
 |-------|---------------------------------------------|--------------|
 | **1** | Restart — repo restructure, `pal/` package, storage + tests ported, engine core, MCP server + CLI wired | spec'd below |
-| **2** | LLM ingest — deterministic router + LiteLLM triage, reading-list domain | spec'd below |
+| **2a** | Text triage — URL-only router + LiteLLM classification | spec'd below |
+| **2b** | Link ingestion — fetch, summarize, reading-list domain | spec'd below |
 | 3     | `pal lint` — folding, taxonomy, contradictions | sketched     |
 | 4     | `pal ask` — agentic retrieval + synthesis   | sketched     |
 | 5     | Hybrid search — `.index/`, FTS5 + vectors, `reindex` | sketched |
 | 6     | Gateways & daemons — Telegram/Discord, voice memos, digests | sketched |
 | 7     | Standalone app — GUI/desktop/web on `pal.engine` | future     |
+
+Phase 2 is deliberately two slices: 2a makes `pal add "<text>"` smart end-to-end
+with no new I/O dependencies; 2b adds web fetching and the reading-list domain.
+Each slice is independently shippable and testable.
 
 Phases 3-7 are sketched at the end. Each gets its own brainstorm → spec → plan
 cycle when reached.
@@ -182,10 +216,14 @@ adapters. No LLM yet — Phase 1 proves the new seams.
 - `pal/engine/` — `ingest.py` (add_thought/add_link), `query.py` (query,
   assemble_context), `reading_list.py` (list_items, set_status), `lint.py`
   (run_lint stub). Phase 1: ingest = existing add behavior; link/reading-list =
-  minimal working version; query/lint = functional stubs with clear errors
-- `pal/mcp/server.py` — FastMCP stdio server exposing the five tools
-- `pal/cli/main.py` — `pal init`, `pal add [--into]`, `pal ask`, `pal lint`,
-  `pal reindex` (reindex is a no-op until Phase 5)
+  minimal working version; query/lint = stubs that raise a typed
+  "not implemented until Phase N" error — engine-internal only, not exposed
+  over MCP (see §4.7)
+- `pal/mcp/server.py` — FastMCP stdio server exposing the **working tools
+  only**: `add_to_brain` and `get_reading_list`. `run_lint`, `query_brain`,
+  `assemble_context` are added in their owning phases
+- `pal/cli/main.py` — `pal init`, `pal add [--into]` working; `pal ask`,
+  `pal lint`, `pal reindex` present but printing "coming in Phase N"
 - `.env.example` — `BRAIN_DIR=~/brain`
 
 ### 6.3 Acceptance criteria
@@ -194,69 +232,75 @@ adapters. No LLM yet — Phase 1 proves the new seams.
 - `pal add "test thought"` behaves identically to old `brain add` (path,
   frontmatter, INDEX/LOG, one commit)
 - All ported storage tests pass under the new package name
-- MCP server exposes the five tools; `add_to_brain` writes the same note format
-  as `pal add`
+- MCP server exposes exactly `add_to_brain` + `get_reading_list`;
+  `add_to_brain` writes the same note format as `pal add`
 - `pal.engine` imports without importing `mcp` or `cli` (enforced by an import
   test)
+- An existing `~/brain/` directory created by the old `brain` CLI works
+  unchanged after the rename (frontmatter format is identical); no migration
+  step required
 - 80%+ unit test coverage on `storage/` maintained
 
 ---
 
-## 7. Phase 2 — LLM ingest
+## 7. Phase 2 — LLM ingest (two slices)
 
-### 7.1 Goal
+### 7a. Phase 2a — Text triage
 
-Replace manual classification with a two-stage triage: a deterministic router
-handles obvious cases (URLs → reading-list, code snippets → `code/`), and a
-LiteLLM call classifies the rest against the existing taxonomy. After Phase 2,
-`pal add "<text>"` is the canonical capture flow, and reading-list items work
-end-to-end.
+#### Goal
 
-### 7.2 Deliverables
+Replace manual classification for text thoughts: a URL-only deterministic
+router plus a LiteLLM classification call against the existing taxonomy. After
+2a, `pal add "<text>"` is the canonical capture flow. No web fetching yet —
+2a adds exactly one new dependency (`litellm`).
 
-#### `pal/engine/triage.py`
-- `route(content: str) -> Route` — deterministic: URL/link → `reading-list/`,
-  code-block/snippet → `code/`, else → None (needs LLM)
-- No LLM call for the obvious cases
+#### Deliverables
 
-#### `pal/agent/llm.py`
+##### `pal/engine/triage.py`
+- `route(content: str) -> Route | None` — deterministic **URL detection only**:
+  a bare link or content whose primary payload is a link → reading-list route;
+  everything else returns None (needs LLM). Pseudo-heuristics (code-snippet
+  detection, topic guesses) deliberately stay out — they misfire more often
+  than they save calls.
+
+##### `pal/agent/llm.py`
 - `complete(messages, *, response_model=None, **opts)` — wraps
   `litellm.completion`; reads model + fallback chain from config; retries on
   rate-limit/timeout with exponential backoff, rotates through fallbacks
 - When `response_model` provided, returns a parsed Pydantic instance
 
-#### `pal/agent/prompts.py`
+##### `pal/agent/prompts.py`
 - `build_classification_prompt(text, schema_md, index_md)` — system prompt with
   SCHEMA rules, INDEX.md contents, file format, class list, inbox-on-uncertainty
   rule; user message is the raw thought
 - Output schema: `IngestDecision { class_path: str | None, slug: str, title: str,
   body: str, rationale: str }`
 
-#### `pal/engine/ingest.py` (Phase 2 update)
+##### `pal/engine/ingest.py` (2a update)
 - `add_thought(text, into=None)` — triage → LLM (if needed) → validate → write →
   INDEX + LOG → git commit
-- `add_link(url, category_hint=None)` — fetch content (httpx + trafilatura),
-  generate summary + tags, file under `reading-list/` with metadata
 - Slug sanitization: lowercased, hyphenated, ASCII, max 60 chars (defense in
   depth)
 - `class_path` null → `inbox/`; non-null → `raw/YYYY/MM/DD/` with
   `classified_into` set
 - **Total LLM failure → `inbox/` with a warning. A thought is never dropped.**
+- URL routed by triage → minimal reading-list note (URL + title from slug,
+  `status: unread`, no fetch) — upgraded by Phase 2b
 
-#### CLI (updated)
+##### CLI (updated)
 - `pal add "<text>"` calls `add_thought`; `--into` retained as bypass override
 - New flags: `--dry-run` (print decision, write nothing), `--why` (print
   rationale)
-- `pal add <url>` routes through `add_link` (or explicit `pal add-link <url>`)
 
-#### `pal/config.py` (updated)
+##### `pal/config.py` (updated) + `pyproject.toml`
 - New `[llm]` section: `primary_model`, `fallback_models: list[str]`,
   `embedding_model` (set but unused)
 - Provider keys from env (`OPENROUTER_API_KEY`, `GROQ_API_KEY`,
   `GEMINI_API_KEY`, `MISTRAL_API_KEY`, `GITHUB_TOKEN`, `CF_API_TOKEN` — at least
   one required)
+- Dependency: `litellm`
 
-### 7.3 Classification prompt (sketch)
+#### Classification prompt (sketch)
 
 ```
 You are the classifier for a personal markdown second-brain.
@@ -281,33 +325,71 @@ Classify the user's incoming thought into the existing taxonomy.
 Return strictly the IngestDecision schema.
 ```
 
-### 7.4 Acceptance criteria
+#### Acceptance criteria (2a)
 
 - `pal add "today I learned cold email subject lines under 5 words beat 30% open
   rates"` lands in an appropriate class (or `inbox/`) with a descriptive title
   and sensible slug
 - Same thought twice → two distinct files (no dedup; that's a lint job)
 - Deliberately-niche thought against an empty brain → `inbox/`
-- URL input → `reading-list/` with fetched summary, `status: unread`
+- URL input → minimal reading-list note with `status: unread` (no fetch yet)
 - `--dry-run` prints the decision and writes nothing
 - Primary provider 429 → falls back through chain, operation succeeds (mock)
 - ALL providers fail → note still lands in `inbox/` with warning; no partial
   state elsewhere
 - Prompt fits 32k context even with INDEX.md at 1000 lines (synthetic test)
 
-### 7.5 Test plan
+#### Test plan (2a)
 
 - `test_llm` — fallback on rate-limit; final failure raises typed exception
 - `test_prompts` — prompt includes SCHEMA + INDEX; schema respected
-- `test_triage` — URL/code/unknown routing decisions
+- `test_triage` — URL vs non-URL routing
 - `test_ingest_logic` — mocked `IngestDecision` → correct path/frontmatter,
   INDEX + LOG updated, commit produced
 - `test_ingest_failure` — LLM raises → note in inbox, no other partial state
-- `test_add_link` — mocked fetch → reading-list file with metadata
 - Live tests (`@pytest.mark.live`, excluded from default run): classification
   into existing class; uncertain → inbox; dry-run writes nothing
 - Manual smoke: 20 real thoughts; if >3 of 20 obviously misclassified, tune
-  prompt before Phase 3
+  prompt before Phase 2b/3
+
+### 7b. Phase 2b — Link ingestion
+
+#### Goal
+
+Upgrade URL capture from the minimal note to the full reading-list flow:
+fetch page content, generate summary + tags, file with complete metadata.
+Adds `httpx` + `trafilatura` dependencies.
+
+#### Deliverables
+
+##### `pal/engine/ingest.py` (2b update)
+- `add_link(url, category_hint=None)` — fetch content (httpx + trafilatura),
+  LLM generates summary + tags + metadata (`author`, `published_date` when
+  extractable), file under `reading-list/` with `url`, `status: unread`
+- **Fetch failure → note still filed** (never drop): title from URL slug, body
+  records the failure, `status: unread`, warning in LOG — the URL is the
+  recoverable artifact
+
+##### CLI
+- `pal add <url>` routes through `add_link` automatically; `pal add-link <url>`
+  as the explicit form
+
+##### `pyproject.toml`
+- Dependencies: `httpx`, `trafilatura`
+
+#### Acceptance criteria (2b)
+
+- Standard article URL → reading-list file with fetched summary, tags, metadata,
+  `status: unread`
+- Fetch failure (404, timeout, paywall) → note still filed with warning, no
+  partial state elsewhere
+- `get_reading_list` MCP tool returns fetched items with summaries
+
+#### Test plan (2b)
+
+- `test_add_link` — mocked fetch → reading-list file with metadata + summary
+- `test_add_link_fetch_failure` — fetch raises → minimal note filed, warning
+  logged, commit produced
 
 ---
 
@@ -323,12 +405,15 @@ related raw notes → `wiki/<topic>/<concept>.md` with `sources:` listing note I
 Taxonomy management: auto-split overflowing dirs, merge sparse ones.
 Contradiction detection: cross-reference new notes against wiki pages, flag in
 LOG.md review diff. Schema self-correction: recommend SCHEMA.md changes.
+Wires the `run_lint` MCP tool (§4.7).
 
 ### Phase 4 — `pal ask`
 
-Loads INDEX.md into prompt context. `Retriever` interface gives candidate IDs;
-v1 = agentic retrieval (LLM reads INDEX.md, decides which files to read).
-Synthesizes answers with citations by ID (resolved to paths at print time).
+Builds `pal/retrieval/` (the `Retriever` protocol + `IndexRetriever`) — until
+now retrieval has been engine-internal INDEX.md reads. Loads INDEX.md into
+prompt context. v1 = agentic retrieval (LLM reads INDEX.md, decides which files
+to read). Synthesizes answers with citations by ID (resolved to paths at print
+time). Wires the `query_brain` and `assemble_context` MCP tools (§4.7).
 
 ### Phase 5 — Hybrid search
 
@@ -353,7 +438,7 @@ access.
 ## 9. Risks
 
 - **LLM misclassification at scale.** Index grows; prompt grows; quality may
-  degrade. Mitigation: deterministic router (Phase 2) reduces LLM load; index
+  degrade. Mitigation: URL-only router (Phase 2a) reduces edge cases; index
   summarization in Phase 3+; embeddings in Phase 5.
 - **Free-tier rate limits.** Multi-provider fallback covers most cases; if all
   exhausted, capture still lands in `inbox/` (never dropped).
@@ -368,7 +453,7 @@ access.
 - Embedding storage: `sqlite-vec` in-process, or defer until index-only search
   shows recall limits? (Decide in Phase 5.)
 - Web scraping fallback depth: httpx + trafilatura vs. playwright for JS-heavy
-  pages? (Decide in Phase 2 add_link.)
+  pages? (Decide in Phase 2b `add_link`.)
 - MCP transport: stdio-only for local, or HTTP/SSE for remote daemons? (Decide
   in Phase 6.)
 - Cron registration UX on Windows: one-shot `pal install-cron` command vs.

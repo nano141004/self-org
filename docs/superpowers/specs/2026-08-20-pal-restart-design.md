@@ -6,7 +6,8 @@ Status: Approved design, awaiting implementation plan
 ## 1. Context
 
 The project (repo folder `self-org`, previously a CLI-only "second brain") is being
-restarted around the v2 vision from `docs/Realigned_Brainstorm.md`: a headless,
+restarted around the v2 vision (originally drafted in `Realigned_Brainstorm.md`,
+now consolidated into `docs/PRD.md`): a headless,
 local-first **Personal Knowledge Engine** exposed to external agents via MCP,
 with a CLI as one of several interfaces.
 
@@ -99,29 +100,21 @@ Brain dir layout (unchanged areas marked, new areas marked NEW):
 
 ## 5. Interface surface
 
-### MCP tools (FastMCP, stdio transport)
-
-| Tool | Input | Output |
-|---|---|---|
-| `add_to_brain` | content, source_url?, category_hint? | status ("stored"/"inbox"), path, id |
-| `query_brain` | query, max_results?, filters? | [{id, path, snippet, summary}] |
-| `get_reading_list` | topic?, status? ("unread"/"reading"/"archived") | [{title, url, summary, date_added}] |
-| `assemble_context` | topic_keywords[] | formatted_markdown_context |
-| `run_lint` | — | changes, recommendations |
-
-### CLI (Typer, thin wrapper)
-
-`pal init`, `pal add "<text>" [--into <path>]`, `pal ask "<question>"`,
-`pal lint`, `pal reindex`. Behavior of existing commands preserved.
+MCP tool I/O and phase availability: see PRD §4.7 (source of truth). Key rule:
+**Phase 1 exposes only working tools** (`add_to_brain`, `get_reading_list`).
+`query_brain`, `run_lint`, and `assemble_context` are wired in their owning
+phases, never exposed as stubs — an MCP client must never call a tool that
+raises "not implemented". CLI commands for not-yet-built ops print a clear
+"coming in Phase N" message instead.
 
 ## 6. LLM triage (designed now, built in Phase 2)
 
 Two-stage ingest so capture never blocks on a model:
 
-1. **Deterministic router first** — URLs/links → `reading-list/`, code snippets
-   → `code/` domain, short notes → `raw/YYYY/MM/DD/`. No LLM call for obvious
-   cases.
-2. **LLM classification only when the router cannot decide** — one LiteLLM call
+1. **Deterministic router first — URLs only.** A URL/link → `reading-list/`.
+   Nothing else is deterministic enough to route without a model; pseudo-heuristics
+   like code-snippet detection stay out of the router.
+2. **LLM classification when the router returns nothing** — one LiteLLM call
    reading `SCHEMA.md` + `INDEX.md`, returning structured title/tags/class via
    Pydantic. Provider fallback chain is config-driven.
 3. **Total LLM failure** — note goes to `inbox/` with a warning. A thought is
@@ -129,18 +122,13 @@ Two-stage ingest so capture never blocks on a model:
 
 ## 7. Roadmap
 
-| Phase | Scope | Status |
-|---|---|---|
-| 1 | Restart — repo restructure, `pal/` package, storage + tests ported, engine core with `ingest`/`query`/`lint`/`reading_list` modules, MCP server + CLI wired, docs consolidated | next (spec'd here) |
-| 2 | LLM ingest — deterministic router + LiteLLM triage, reading-list domain functional | spec'd here, detail in plan |
-| 3 | `pal lint` — concept folding, taxonomy management, contradiction detection | sketched |
-| 4 | `pal ask` — agentic retrieval with citations | sketched |
-| 5 | Hybrid search — `.index/` cache, FTS5 + vector embeddings, `reindex` | sketched |
-| 6 | Gateways & daemons — Telegram/Discord bridge, voice memos, weekly digests, context resurfacing | sketched |
-| 7 | Standalone app — GUI/desktop or web front-end on `pal.engine` | future |
+The phase plan lives in PRD §5 (source of truth). Status as of this spec:
 
-Phases 3-7 are intentionally sketched, not specced. Each gets its own
-brainstorm → spec → plan cycle when reached.
+- Phase 1 (restart) — spec'd in this doc + PRD §6; next
+- Phase 2 (LLM ingest) — split into **2a text triage** and **2b link
+  ingestion**; spec'd in PRD §7
+- Phases 3-7 — sketched in PRD §8; each gets its own brainstorm → spec → plan
+  cycle when reached
 
 ## 8. Doc consolidation (done this session)
 
@@ -150,12 +138,8 @@ brainstorm → spec → plan cycle when reached.
 - `README.md` and `CLAUDE.md` updated to the pal/v2 vision and naming.
 - This design spec lives at `docs/superpowers/specs/2026-08-20-pal-restart-design.md`.
 
-## 9. Success criteria for Phase 1
+## 9. Success criteria
 
-- `pip install -e ".[dev]"` installs the `pal` package with `pal` and `pal-mcp`
-  entry points.
-- `pal init` + `pal add` behave identically to the old `brain` commands.
-- All ported storage tests pass under the new package name.
-- MCP server exposes the five tools and `add_to_brain` writes the same note
-  format as `pal add`.
-- `pal.engine` imports without importing `mcp` or `cli` (import check in tests).
+See PRD §6.3 (source of truth). One restart-specific invariant worth stating:
+`pal.engine` must import without importing `pal.mcp` or `pal.cli`, enforced by
+an import test.

@@ -18,7 +18,8 @@ Three operations:
 | Phase | Scope                                       | Status     |
 |-------|---------------------------------------------|------------|
 | 1     | Restart — `pal/` package, storage ported, engine + MCP + CLI | spec'd |
-| 2     | LLM ingest — deterministic router + LiteLLM triage | spec'd |
+| 2a    | Text triage — URL-only router + LiteLLM classification | spec'd |
+| 2b    | Link ingestion — fetch, summarize, reading-list | spec'd |
 | 3     | `pal lint` — reorganize, fold, contradictions | sketched   |
 | 4     | `pal ask` — agentic retrieval + synthesis    | sketched   |
 | 5     | Hybrid search — `.index/`, FTS + embeddings  | sketched   |
@@ -26,6 +27,9 @@ Three operations:
 | 7     | Standalone app — GUI/desktop/web on the engine | future   |
 
 ## Quick start
+
+> **Target state.** The `pal` package lands with Phase 1 — until then the repo
+> still installs the old `brain` CLI. Commands below are what Phase 1 delivers.
 
 Requires Python 3.11+ and `git` on PATH.
 
