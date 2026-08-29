@@ -34,6 +34,10 @@ def inbox_path_for(id: str, slug: str) -> Path:
     return brain_dir() / "inbox" / _filename(id, slug)
 
 
+def reading_list_path_for(id: str, slug: str) -> Path:
+    return brain_dir() / "reading-list" / _filename(id, slug)
+
+
 def index_path() -> Path:
     return brain_dir() / "INDEX.md"
 

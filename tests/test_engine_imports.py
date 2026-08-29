@@ -9,6 +9,7 @@ ENGINE_MODULES = [
     "pal.engine.ingest",
     "pal.engine.query",
     "pal.engine.lint",
+    "pal.engine.reading_list",
     "pal.config",
     "pal.storage.ids",
     "pal.storage.paths",
