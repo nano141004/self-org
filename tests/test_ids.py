@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from brain.storage.ids import new_id
+from pal.storage.ids import new_id
 
 
 ULID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")

@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from brain.storage.paths import brain_dir
+from pal.storage.paths import brain_dir
 
 
 class GitError(RuntimeError):

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-from brain.storage import paths
+from pal.storage import paths
 
 
 def test_brain_dir_reads_from_settings(tmp_brain: Path):

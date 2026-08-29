@@ -4,7 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from brain.storage import schema
+from pal.storage import schema
 
 
 def _git(args: list[str], cwd: Path) -> str:

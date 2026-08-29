@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from brain.config import reset_settings_cache
+from pal.config import reset_settings_cache
 
 
 @pytest.fixture

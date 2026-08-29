@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from brain.storage.files import read_note, write_atomic, write_note
+from pal.storage.files import read_note, write_atomic, write_note
 
 
 def test_write_atomic_creates_file(tmp_path: Path):
@@ -29,7 +29,7 @@ def test_write_atomic_overwrites(tmp_path: Path):
 def test_write_atomic_no_partial_on_rename_failure(tmp_path: Path, monkeypatch):
     target = tmp_path / "sub" / "x.md"
 
-    import brain.storage.files as files_mod
+    import pal.storage.files as files_mod
 
     def boom(*_args, **_kwargs):
         raise OSError("simulated rename crash")

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from brain.config import get_settings
+from pal.config import get_settings
 
 
 def brain_dir() -> Path:

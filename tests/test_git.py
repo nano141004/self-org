@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from brain.storage import git
-from brain.storage.files import write_atomic
+from pal.storage import git
+from pal.storage.files import write_atomic
 
 
 def _git(args: list[str], cwd: Path) -> str:

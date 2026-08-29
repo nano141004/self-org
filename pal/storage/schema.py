@@ -4,9 +4,9 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from brain.storage import git
-from brain.storage.files import write_atomic
-from brain.storage.paths import brain_dir, index_path, log_path, schema_path
+from pal.storage import git
+from pal.storage.files import write_atomic
+from pal.storage.paths import brain_dir, index_path, log_path, schema_path
 
 
 SCHEMA_TEMPLATE = """\
