@@ -58,7 +58,7 @@ it never imports `engine`, `mcp`, or `cli`.
   - Candidates: ordered `(api_key, model)` pairs — for each key: primary
     model, then fallbacks in order.
   - Per candidate: retry transient errors (429, 5xx, timeouts) with
-    exponential backoff 1s → 2s → 4s (jittered), max 3 attempts.
+    exponential backoff 1s → 2s (capped), jittered, max 3 attempts.
   - Persistent quota errors (429/403 after retries) → next candidate.
   - **Global budget:** max 6 attempts across ALL candidates and a 15 s
     wall-clock cap, whichever is hit first (backoff capped at 2 s). Keeps
