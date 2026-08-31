@@ -43,7 +43,8 @@ pal/
 │   ├── triage.py         NEW — route(): URL detection only
 │   └── ingest.py         UPDATED — add_thought pipeline
 ├── config.py             UPDATED — [llm] settings
-└── cli/main.py           UPDATED — --dry-run, --why, warn on LLM failure
+├── cli/main.py           UPDATED — --dry-run, --why, warn on LLM failure
+└── mcp/server.py         UPDATED — source_url present → link route
 ```
 
 Dependency rule unchanged: `agent/` is infrastructure imported by `engine`;
@@ -59,9 +60,13 @@ it never imports `engine`, `mcp`, or `cli`.
   - Per candidate: retry transient errors (429, 5xx, timeouts) with
     exponential backoff 1s → 2s → 4s (jittered), max 3 attempts.
   - Persistent quota errors (429/403 after retries) → next candidate.
-  - All candidates exhausted → `LLMUnavailableError` (new, defined in
-    `llm.py`; standalone exception — `agent/` never imports `engine`, so it
-    cannot subclass `PalError`).
+  - **Global budget:** max 6 attempts across ALL candidates and a 15 s
+    wall-clock cap, whichever is hit first (backoff capped at 2 s). Keeps
+    worst-case capture fast so the inbox fallback honors the "instant
+    ingestion" philosophy (PRD §1.4) instead of blocking ~30-60 s.
+  - All candidates exhausted or global budget spent → `LLMUnavailableError`
+    (new, defined in `llm.py`; standalone exception — `agent/` never imports
+    `engine`, so it cannot subclass `PalError`).
   - `response_model` given → parse completion into Pydantic instance; parse
     failure counts as an error for this candidate (rotate onward).
 - Reads model lists + keys from `get_settings()` only.
@@ -82,16 +87,23 @@ it never imports `engine`, `mcp`, or `cli`.
   bare URL, or a message whose first line is a URL with ≤200 chars of
   remaining content → `Route(kind="link", url=...)`; everything else → `None`
   (needs LLM).
+- Multiple URLs in one capture → **first URL wins**; the remaining text (and
+  any later URLs) stay in the note body verbatim.
 - `Route` — frozen dataclass `(kind, url)`.
 
 ### `pal/engine/ingest.py` (update)
 
 - `add_thought(text, into=None)` pipeline:
   1. `into` given → existing deterministic path, LLM bypassed entirely.
-  2. `route(text)` → link → minimal reading-list note: frontmatter
-     `id, type: reading, title (from slug), url, status: unread,
-     summary: null, created`; filed under `reading-list/`; INDEX + LOG +
-     commit. (Matches `list_items`'s expectations — no format change.)
+   2. `route(text)` → link → minimal reading-list note: frontmatter
+      `id, type: reading, title (from slug), url, status: unread,
+      summary: null, created` plus the standard fields
+      (`classified_into: null, sources: [], tags: []`) so every note carries
+      the full PRD §4.5 shape; filed under `reading-list/`; INDEX entry class
+      `reading-list`, LOG op `ingest`; one commit. Returns
+      `IngestResult(class_path="reading-list")` so `add_to_brain` reports
+      status `stored` (not `inbox`). (Matches `list_items`'s expectations —
+      no format change.)
   3. Else → `build_classification_prompt` + `complete(response_model=
      IngestDecision)` → validate → `class_path` set → `raw/YYYY/MM/DD/` with
      `classified_into`; null → `inbox/`. Title from decision, slug sanitized
@@ -117,10 +129,21 @@ it never imports `engine`, `mcp`, or `cli`.
 
 - `pal add "<text>"` — same command, new pipeline; `--into` unchanged.
 - `--dry-run` — runs route + classification, prints decision (route/class,
-  title, rationale), writes nothing, no commit.
+  title, rationale), writes nothing, no commit. With `--into`, prints the
+  deterministic path directly (no LLM call).
 - `--why` — adds rationale to the normal output.
 - LLM-failure warning printed to stderr: `[warn] LLM unavailable — filed to
   inbox/`. Exit code 0 (thought captured; only classification failed).
+
+### `pal/mcp/server.py` (update)
+
+- `add_to_brain`: `source_url` present → link route directly (minimal
+  reading-list note with `url=source_url`) — the Phase 1 body-appendix
+  behavior (`Source: <url>`) is removed in 2a. Content-only thoughts flow
+  through the same `add_thought` pipeline as the CLI. `category_hint` keeps
+  mapping to `into`.
+- `get_reading_list` — unchanged; minimal notes surface with
+  `summary: null`, `status: unread`.
 
 ## 5. Acceptance criteria
 
@@ -129,7 +152,8 @@ it never imports `engine`, `mcp`, or `cli`.
    slug.
 2. Same thought twice → two distinct files (no dedup; lint's job later).
 3. Niche thought against empty brain → `inbox/`.
-4. URL input → `reading-list/` minimal note, `status: unread`, no fetch.
+4. URL input → `reading-list/` minimal note, `status: unread`, no fetch;
+   INDEX entry class `reading-list`; `add_to_brain` reports status `stored`.
 5. `--dry-run` prints decision, writes nothing (no file, no commit).
 6. `--why` shows rationale; default output stays compact.
 7. Primary key exhausted → rotates through `(key, model)` chain; operation
@@ -140,16 +164,24 @@ it never imports `engine`, `mcp`, or `cli`.
 10. Prompt fits 32k context with INDEX.md at 1000 lines (synthetic test).
 11. Import guards hold: `engine` imports without `mcp`/`cli`; `agent` never
     imports `engine`, `mcp`, or `cli`.
+12. `source_url` on `add_to_brain` → link note filed directly (no body
+    appendix, no LLM call).
+13. Global budget: persistent/slow 429s across the whole `(key, model)`
+    matrix still land the note in `inbox/` within the bounded attempt/time
+    cap (mocked) — capture latency stays bounded.
 
 ## 6. Test plan
 
-- `test_triage` — bare URL; URL + context; multi-URL; non-URL text
+- `test_triage` — bare URL; URL + context; multi-URL (first URL wins,
+  rest kept in body); non-URL text
 - `test_prompts` — SCHEMA + INDEX embedded; IngestDecision shape
 - `test_llm` — transient 429 retried; persistent 429 rotates key then model;
-  all-fail raises `LLMUnavailableError`; response_model parsing; parse
-  failure rotates
+  global budget caps total attempts/time; all-fail raises
+  `LLMUnavailableError`; response_model parsing; parse failure rotates
 - `test_ingest_logic` — mocked decision → path/frontmatter/INDEX/LOG/commit;
-  `--into` zero LLM calls; URL → minimal link note; dry-run writes nothing
+  `--into` zero LLM calls; URL → minimal link note (full frontmatter shape,
+  INDEX class `reading-list`, result class_path `reading-list`);
+  `source_url` → link note; dry-run writes nothing
 - `test_ingest_failure` — LLM raises → inbox + warning, no partial state
 - Live (`@pytest.mark.live`, skipped by default): classify into existing
   class; uncertain → inbox; dry-run

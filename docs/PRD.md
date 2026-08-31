@@ -298,6 +298,8 @@ router plus a LiteLLM classification call against the existing taxonomy. After
 - Provider keys from env (`OPENROUTER_API_KEY`, `GROQ_API_KEY`,
   `GEMINI_API_KEY`, `MISTRAL_API_KEY`, `GITHUB_TOKEN`, `CF_API_TOKEN` — at least
   one required)
+- Provider decision (pinned in the Phase 2a spec): Gemini-only with multi-key
+  rotation; the multi-provider env list above is the long-term config shape
 - Dependency: `litellm`
 
 #### Classification prompt (sketch)
