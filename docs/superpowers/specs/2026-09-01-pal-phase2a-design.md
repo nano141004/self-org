@@ -59,8 +59,9 @@ it never imports `engine`, `mcp`, or `cli`.
   - Per candidate: retry transient errors (429, 5xx, timeouts) with
     exponential backoff 1s → 2s → 4s (jittered), max 3 attempts.
   - Persistent quota errors (429/403 after retries) → next candidate.
-  - All candidates exhausted → `LLMUnavailableError` (new, in `llm.py`,
-    subclass of `PalError`).
+  - All candidates exhausted → `LLMUnavailableError` (new, defined in
+    `llm.py`; standalone exception — `agent/` never imports `engine`, so it
+    cannot subclass `PalError`).
   - `response_model` given → parse completion into Pydantic instance; parse
     failure counts as an error for this candidate (rotate onward).
 - Reads model lists + keys from `get_settings()` only.
@@ -78,8 +79,9 @@ it never imports `engine`, `mcp`, or `cli`.
 ### `pal/engine/triage.py`
 
 - `route(content: str) -> Route | None` — deterministic, no heuristics:
-  bare URL or content whose primary payload is a link → `Route(kind="link",
-  url=...)`; everything else → `None` (needs LLM).
+  bare URL, or a message whose first line is a URL with ≤200 chars of
+  remaining content → `Route(kind="link", url=...)`; everything else → `None`
+  (needs LLM).
 - `Route` — frozen dataclass `(kind, url)`.
 
 ### `pal/engine/ingest.py` (update)
@@ -136,9 +138,8 @@ it never imports `engine`, `mcp`, or `cli`.
    partial state elsewhere.
 9. `--into` bypass performs zero LLM calls.
 10. Prompt fits 32k context with INDEX.md at 1000 lines (synthetic test).
-11. `pal.engine` still imports without `mcp`/`cli` (guard test extended with
-    `agent` modules... guard remains: `engine` imports `agent`, not vice
-    versa).
+11. Import guards hold: `engine` imports without `mcp`/`cli`; `agent` never
+    imports `engine`, `mcp`, or `cli`.
 
 ## 6. Test plan
 
