@@ -93,7 +93,7 @@ self-org/
 │   │   └── server.py           # FastMCP stdio server, 2 tools
 │   └── cli/
 │       └── main.py             # Typer CLI: init / add / ask / lint / reindex
-├── tests/                      # pytest suite (137 tests; 3 live)
+├── tests/                      # pytest suite (146 tests; 3 live)
 │   ├── conftest.py             # fixtures: isolated BRAIN_DIR + cleared LLM keys
 │   ├── test_config.py          # settings: defaults + env splitting
 │   ├── test_llm.py             # LLM wrapper: rotation, budgets, parsing
@@ -101,6 +101,7 @@ self-org/
 │   ├── test_agent_fetch.py     # extract_article + url-extract prompt
 │   ├── test_{ids,paths,schema,files,git}.py    # storage tests (ported)
 │   ├── test_engine_ingest.py   # add_thought classify pipeline + link notes
+│   ├── test_add_link.py        # add_link: fetch → summarize → dedup → upgrade
 │   ├── test_ingest_live.py     # live LLM classification (skipped by default)
 │   ├── test_triage.py          # URL-only routing (route/Route)
 │   ├── test_engine_stubs.py    # phase stubs raise the right error
@@ -264,17 +265,20 @@ No behavior was changed in the rename; tests were kept passing in substance.
     Phase {phase}"`. The CLI catches it to print "coming in Phase N".
 - **`ingest.py`** — capture:
   - `IngestResult` — frozen dataclass `(id, title, path, class_path,
-    warning=None, rationale=None)`; `warning` carries the LLM-failure message
-    when a thought had to fall back to `inbox/`; `rationale` carries the
-    classifier's reasoning when the LLM succeeded (drives `pal add --why`
-    without a second LLM call)
+    warning=None, rationale=None, action="created")`; `warning` carries the
+    LLM-failure message when a thought had to fall back to `inbox/`;
+    `rationale` carries the classifier's reasoning when the LLM succeeded
+    (drives `pal add --why` without a second LLM call); `action` is
+    `"created"` | `"skipped-duplicate"` | `"upgraded"` and describes what
+    `add_link` did
   - `add_thought(text, into=None) -> IngestResult` — the core op:
     1. strip text; empty → `EmptyThoughtError`; brain not initialized →
        `BrainNotInitializedError`
     2. `into` given → deterministic path, **zero LLM calls**: file under
        `raw/YYYY/MM/DD/` with `classified_into` set
-    3. else `classify_thought` → `Route` (link) → `add_link_note(url,
-       body_text=rest)`
+    3. else `classify_thought` → `Route` (link) → `add_link(url, note=rest)`
+       — the full fetch + summarize pipeline (§4 spec; fetch/summarize
+       failures still file the note, never dropping the URL)
     4. `classify_thought` → `IngestDecision`; validate: `class_path` None/empty
        → None; `slug` through `_derive_slug` (≤60, kebab, ASCII); `title`
        stripped ≤100, fallback `"untitled"`; `body` fallback to raw text;
@@ -293,16 +297,43 @@ No behavior was changed in the rename; tests were kept passing in substance.
     response_model=IngestDecision)`. LLM-layer exceptions propagate — callers
     decide the fallback (ingest → inbox/, dry-run → preview). Used by
     `add_thought` and `pal add --dry-run`.
-  - `add_link_note(url, body_text=None) -> IngestResult` — minimal
-    reading-list note: `url` has trailing punctuation stripped
-    (`.,;:!?` and `)]}` — the router's regex keeps it); title = last URL path
-    segment (percent-decoded, ≤100 chars, fallback `"Untitled link"`); slug =
-    `_derive_slug(title)`; frontmatter `id, type: reading, title, created,
-    classified_into: null, sources: [], tags: [], url, status: unread,
-    summary: null`; body = `body_text` or `""`; path via
-    `reading_list_path_for`; INDEX class `reading-list`, LOG op `ingest`; one
-    commit; returns `IngestResult(class_path="reading-list")`
-  - `add_link(url, ...)` — stub: `NotImplementedPhaseError("add_link", "2b")`
+  - `add_link_note(url, body_text=None, log_extra=None) -> IngestResult` —
+    minimal reading-list note (no fetch): `url` has trailing punctuation
+    stripped (`.,;:!?` and `)]}` — the router's regex keeps it); title = last
+    URL path segment (percent-decoded, ≤100 chars, fallback
+    `"Untitled link"`); slug = `_derive_slug(title)`; frontmatter `id,
+    type: reading, title, created, classified_into: null, sources: [],
+    tags: [], url, status: unread, summary: null`; body = `body_text` or
+    `""`; path via `reading_list_path_for`; INDEX class `reading-list`, LOG
+    op `ingest`; one commit; returns `IngestResult(class_path="reading-list")`.
+    `log_extra` merges extra keys into the LOG `ingest` payload (e.g.
+    `fetch_error`) within the same single commit.
+  - `add_link(url, note=None) -> IngestResult` — the full Phase 2b link
+    ingestion pipeline (`dedup → fetch → summarize → write`), replacing the
+    stub. Flow:
+    1. guards: empty url → `EmptyThoughtError`; uninitialized brain →
+       `BrainNotInitializedError`; `url = clean_url(url)`
+    2. dedup via `reading_list.find_by_url(url)`; existing note **with
+       summary** → `action="skipped-duplicate"`, **no write, no commit**
+    3. existing note **without summary** (a failed-fetch note) → upgrade in
+       place: same id + filename, keep the old body as commentary (unless it
+       is a `Fetch failed:` record), `schema.update_index_entry` for the new
+       title, LOG `action: "upgraded"` + `via`, one commit; re-fetch failure
+       → note untouched, `action="skipped-duplicate"` + `warning`
+    4. fresh + `fetch_article` raises `FetchError` → `add_link_note` with
+       body `Fetch failed: <reason>` and LOG `fetch_error`; `warning` set —
+       the URL is the recoverable artifact
+    5. fresh + fetch ok → `complete(build_link_summary_prompt(url, text),
+       response_model=LinkDecision)`; on summarize failure the note keeps the
+       fetched text with `summary: null` and LOG `summary_error`;
+       `warning` set
+    6. full success → frontmatter = `_reading_fm` (type reading, url,
+       status unread, summary/author/published, tags); body = user commentary
+       as `>` quote lines + `---` + fetched text capped at `MAX_BODY_CHARS`
+       (`_compose_body`); title = `LinkDecision.title`, fallback
+       `derive_link_title(url)`; INDEX class `reading-list`, LOG, one commit
+  - `_quote` / `_compose_body` / `_reading_fm` / `_index_and_commit` —
+    private helpers for the pipeline above
   - `derive_title` / `clean_url` / `derive_link_title` — public derivations
     (tested); `_derive_slug` stays private
 - **`fetch.py`** — network I/O + article extraction for link ingestion (Phase 2b):
@@ -430,13 +461,13 @@ or move files freely because cross-references are by `id`, never by path.
    never imports mcp/cli, and agent never imports engine/mcp/cli (guarded by
    `tests/test_engine_imports.py`).
 
-## 7. What's implemented vs. stubbed (as of Phase 2a)
+## 7. What's implemented vs. stubbed (as of Phase 2b)
 
 | Capability | Status | Ships in |
 |---|---|---|
 | `pal init` / `pal add [--into]` / `add_to_brain` / `get_reading_list` | working | Phase 1 |
 | `reading_list.list_items` / `set_status` | working (minimal) | Phase 1 |
-| `ingest.add_link` | stub | Phase 2b |
+| `ingest.add_link` (fetch → summarize → dedup → upgrade) | working | Phase 2b |
 | URL-only routing (`triage.route`) | working (pure router) | Phase 2a |
 | LLM classification (`add_thought` classify pipeline, inbox fallback) | working | Phase 2a |
 | `ingest.add_link_note` (minimal link notes) | working | Phase 2a |
@@ -447,7 +478,7 @@ or move files freely because cross-references are by `id`, never by path.
 ## 8. Tests — how to run and what they guard
 
 ```powershell
-.venv\Scripts\python -m pytest            # full suite (137 tests; 3 live skipped)
+.venv\Scripts\python -m pytest            # full suite (146 tests; 3 live skipped)
 .venv\Scripts\python -m pytest -m live    # live LLM tests (needs GEMINI_API_KEY)
 .venv\Scripts\python -m pytest tests\test_engine_imports.py   # dependency rule (engine + agent)
 .venv\Scripts\python -m pytest --cov=pal.storage --cov-report=term-missing

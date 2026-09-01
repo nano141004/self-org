@@ -10,15 +10,11 @@ import pytest
 
 from pal.agent.llm import LLMUnavailableError
 from pal.agent.prompts import IngestDecision
-from pal.engine.errors import (
-    BrainNotInitializedError,
-    EmptyThoughtError,
-    NotImplementedPhaseError,
-)
+from pal.engine.errors import BrainNotInitializedError, EmptyThoughtError
+from pal.engine.fetch import FetchError
 from pal.engine.ingest import (
     IngestResult,
     _derive_slug,
-    add_link,
     add_thought,
     derive_title,
 )
@@ -161,16 +157,6 @@ def test_add_thought_one_commit_per_invocation(tmp_brain: Path):
     assert "ingest: gamma" in log
 
 
-# ---------- add_link (Phase 2b) ----------
-
-
-def test_add_link_is_stub_until_phase_2b():
-    with pytest.raises(NotImplementedPhaseError) as exc_info:
-        add_link("https://example.com")
-    assert exc_info.value.phase == "2b"
-    assert "not implemented until Phase 2b" in str(exc_info.value)
-
-
 # ---------- Phase 2a: classify pipeline + link notes ----------
 
 
@@ -183,6 +169,13 @@ def _fake_complete(decision: IngestDecision):
 
 def _failing_complete(exc: Exception):
     def _fn(messages: list[dict], **opts):
+        raise exc
+
+    return _fn
+
+
+def _failing_fetch(exc: Exception):
+    def _fn(url: str):
         raise exc
 
     return _fn
@@ -246,12 +239,16 @@ def test_add_thought_class_path_none_goes_to_inbox(tmp_brain: Path, monkeypatch)
     assert fm["classified_into"] is None
 
 
-def test_add_thought_url_routes_to_link_note(tmp_brain: Path):
+def test_add_thought_url_routes_to_link_note(tmp_brain: Path, monkeypatch):
     schema.ensure_brain_initialized()
+    monkeypatch.setattr(
+        "pal.engine.ingest.fetch_article",
+        _failing_fetch(FetchError("https://example.com/article: HTTP 404")),
+    )
     result = add_thought("https://example.com/article.")
     assert result.class_path == "reading-list"
     assert result.title == "article"
-    assert result.warning is None
+    assert "Fetch failed" in result.warning
 
     files = list((tmp_brain / "reading-list").glob("*.md"))
     assert files == [result.path]
@@ -265,23 +262,28 @@ def test_add_thought_url_routes_to_link_note(tmp_brain: Path):
     assert fm["classified_into"] is None
     assert fm["sources"] == []
     assert fm["tags"] == []
-    assert body.strip() == ""
+    assert body.strip().startswith("Fetch failed:")
 
     index_text = (tmp_brain / "INDEX.md").read_text(encoding="utf-8")
     assert "`reading-list`" in index_text
     log_text = (tmp_brain / "LOG.md").read_text(encoding="utf-8")
     payload = json.loads(log_text.splitlines()[-1].split(" ", 3)[-1])
     assert payload["class"] == "reading-list"
+    assert payload["fetch_error"] == "https://example.com/article: HTTP 404"
 
 
-def test_add_thought_multiline_url_keeps_rest_as_body(tmp_brain: Path):
+def test_add_thought_multiline_url_rest_dropped_on_fetch_failure(tmp_brain: Path, monkeypatch):
     schema.ensure_brain_initialized()
+    monkeypatch.setattr(
+        "pal.engine.ingest.fetch_article",
+        _failing_fetch(FetchError("https://example.com: HTTP 404")),
+    )
     result = add_thought("https://example.com\nsome context here")
     assert result.class_path == "reading-list"
     assert result.title == "Untitled link"
     fm, body = read_note(result.path)
     assert fm["url"] == "https://example.com"
-    assert body.strip() == "some context here"
+    assert body.strip().startswith("Fetch failed:")
 
 
 def test_add_thought_into_bypasses_llm(tmp_brain: Path, monkeypatch):
