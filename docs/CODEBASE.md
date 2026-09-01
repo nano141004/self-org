@@ -69,7 +69,8 @@ self-org/
 │   ├── config.py               # settings: BRAIN_DIR + LLM model/key env
 │   ├── agent/                  # LLM abstraction — imported by engine (2a)
 │   │   ├── __init__.py
-│   │   └── llm.py              # complete() — retries, key×model rotation
+│   │   ├── llm.py              # complete() — retries, key×model rotation
+│   │   └── prompts.py          # classification prompt + IngestDecision
 │   ├── engine/                 # ALL business logic — plain functions
 │   │   ├── __init__.py
 │   │   ├── errors.py           # typed exceptions used across the engine
@@ -87,10 +88,11 @@ self-org/
 │   │   └── server.py           # FastMCP stdio server, 2 tools
 │   └── cli/
 │       └── main.py             # Typer CLI: init / add / ask / lint / reindex
-├── tests/                      # pytest suite (85 tests)
+├── tests/                      # pytest suite (89 tests)
 │   ├── conftest.py             # tmp_brain fixture (isolated BRAIN_DIR per test)
 │   ├── test_config.py          # settings: defaults + env splitting
 │   ├── test_llm.py             # LLM wrapper: rotation, budgets, parsing
+│   ├── test_prompts.py         # classification prompt + IngestDecision shape
 │   ├── test_{ids,paths,schema,files,git}.py    # storage tests (ported)
 │   ├── test_engine_ingest.py   # add_thought behavior
 │   ├── test_engine_stubs.py    # phase stubs raise the right error
@@ -157,6 +159,25 @@ model lists + keys from `get_settings()` only; never imports engine/mcp/cli.
   - `api_key`/`model` per call come from the candidate pair; extra `opts`
     pass through to litellm. Empty key list → fail fast with
     `LLMUnavailableError` (0 attempts).
+
+### `pal/agent/prompts.py` — the classification prompt (Phase 2a)
+
+- `IngestDecision(BaseModel)` — `class_path: str | None`, `slug`, `title`,
+  `body`, `rationale` — all nullable with `None` defaults so a partial or
+  all-null LLM response still parses; the ingest pipeline applies its own
+  fallbacks and sends `class_path=null` notes to `inbox/`.
+- `build_classification_prompt(text, schema_md, index_md) -> list[dict]` —
+  OpenAI-style messages. The system prompt embeds: brain rules (`schema_md`),
+  existing classes + notes (`index_md`, so the class list is visible), the
+  PRD §4.5 file format, the classification rules (strongly prefer an existing
+  class; only invent when nothing fits; uncertain → `class_path=null` →
+  inbox/; descriptive title; kebab-case slug ≤60 chars; body lightly cleaned)
+  and a "respond with JSON only" instruction matching `IngestDecision`. The
+  user message is the raw thought.
+- `MAX_INDEX_CHARS = 20_000` — `index_md` is truncated to this budget,
+  keeping the most recent entries (newest notes best reflect the current
+  taxonomy), with a notice line — so the serialized prompt stays ≤ 32k chars
+  even with a 1000-line INDEX.md (spec AC 10; guarded by a synthetic test).
 
 ### `pal/storage/` — the I/O layer (ported as-is from the old `brain`)
 
@@ -305,7 +326,7 @@ or move files freely because cross-references are by `id`, never by path.
 ## 8. Tests — how to run and what they guard
 
 ```powershell
-.venv\Scripts\python -m pytest            # full suite (85 tests)
+.venv\Scripts\python -m pytest            # full suite (89 tests)
 .venv\Scripts\python -m pytest tests\test_engine_imports.py   # dependency rule
 .venv\Scripts\python -m pytest --cov=pal.storage --cov-report=term-missing
 ```
