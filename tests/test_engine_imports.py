@@ -22,6 +22,7 @@ AGENT_MODULES = [
     "pal.agent",
     "pal.agent.llm",
     "pal.agent.prompts",
+    "pal.agent.fetch",
 ]
 
 GUARD = """

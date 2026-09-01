@@ -93,7 +93,7 @@ self-org/
 │   │   └── server.py           # FastMCP stdio server, 2 tools
 │   └── cli/
 │       └── main.py             # Typer CLI: init / add / ask / lint / reindex
-├── tests/                      # pytest suite (146 tests; 3 live)
+├── tests/                      # pytest suite (148 tests; 5 live)
 │   ├── conftest.py             # fixtures: isolated BRAIN_DIR + cleared LLM keys
 │   ├── test_config.py          # settings: defaults + env splitting
 │   ├── test_llm.py             # LLM wrapper: rotation, budgets, parsing
@@ -102,7 +102,7 @@ self-org/
 │   ├── test_{ids,paths,schema,files,git}.py    # storage tests (ported)
 │   ├── test_engine_ingest.py   # add_thought classify pipeline + link notes
 │   ├── test_add_link.py        # add_link: fetch → summarize → dedup → upgrade
-│   ├── test_ingest_live.py     # live LLM classification (skipped by default)
+│   ├── test_ingest_live.py     # live LLM classification + link ingestion (skipped by default)
 │   ├── test_triage.py          # URL-only routing (route/Route)
 │   ├── test_engine_stubs.py    # phase stubs raise the right error
 │   ├── test_engine_imports.py  # THE dependency-rule guard (engine + agent)
@@ -477,7 +477,7 @@ or move files freely because cross-references are by `id`, never by path.
    never imports mcp/cli, and agent never imports engine/mcp/cli (guarded by
    `tests/test_engine_imports.py`).
 
-## 7. What's implemented vs. stubbed (as of Phase 2b)
+## 7. What's implemented vs. stubbed (Phase 1 + 2a + 2b shipped)
 
 | Capability | Status | Ships in |
 |---|---|---|
@@ -494,7 +494,7 @@ or move files freely because cross-references are by `id`, never by path.
 ## 8. Tests — how to run and what they guard
 
 ```powershell
-.venv\Scripts\python -m pytest            # full suite (150 tests; 3 live skipped)
+.venv\Scripts\python -m pytest            # full suite (153 tests; 5 live skipped)
 .venv\Scripts\python -m pytest -m live    # live LLM tests (needs GEMINI_API_KEY)
 .venv\Scripts\python -m pytest tests\test_engine_imports.py   # dependency rule (engine + agent)
 .venv\Scripts\python -m pytest --cov=pal.storage --cov-report=term-missing

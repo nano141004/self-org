@@ -12,17 +12,17 @@ Three operations:
 
 ## Status
 
-**Phase 1 + 2a shipped.** The repo is now the `pal` engine (MCP-native,
+**Phase 1 + 2a + 2b shipped.** The repo is now the `pal` engine (MCP-native,
 engine-first API); the old `brain` CLI is gone. `pal add "<text>"` triages
-captures — URLs route to `reading-list/`, everything else is classified by a
-free-tier Gemini chain with a never-drop inbox fallback. See `docs/PRD.md` for
-the plan.
+captures — URLs route to `reading-list/` (fetch + summarize, dedup + upgrade),
+everything else is classified by a free-tier Gemini chain with a never-drop
+inbox fallback. See `docs/PRD.md` for the plan.
 
 | Phase | Scope                                       | Status     |
 |-------|---------------------------------------------|------------|
 | 1     | Restart — `pal/` package, storage ported, engine + MCP + CLI | done (shipped) |
 | 2a    | Text triage — URL-only router + LiteLLM classification | done (shipped) |
-| 2b    | Link ingestion — fetch, summarize, reading-list | spec'd |
+| 2b    | Link ingestion — fetch, summarize, reading-list | done (shipped) |
 | 3     | `pal lint` — reorganize, fold, contradictions | sketched   |
 | 4     | `pal ask` — agentic retrieval + synthesis    | sketched   |
 | 5     | Hybrid search — `.index/`, FTS + embeddings  | sketched   |

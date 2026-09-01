@@ -181,7 +181,7 @@ is reading the output.
 |-------|---------------------------------------------|--------------|
 | **1** | Restart — repo restructure, `pal/` package, storage + tests ported, engine core, MCP server + CLI wired | spec'd below |
 | **2a** | Text triage — URL-only router + LiteLLM classification | spec'd below |
-| **2b** | Link ingestion — fetch, summarize, reading-list domain | spec'd below |
+| **2b** | Link ingestion — fetch, summarize, reading-list domain | done (shipped) |
 | 3     | `pal lint` — folding, taxonomy, contradictions | sketched     |
 | 4     | `pal ask` — agentic retrieval + synthesis   | sketched     |
 | 5     | Hybrid search — `.index/`, FTS5 + vectors, `reindex` | sketched |
