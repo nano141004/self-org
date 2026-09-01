@@ -99,3 +99,55 @@ def _fit_index(index_md: str, budget: int = MAX_INDEX_CHARS) -> str:
     if newline != -1:
         tail = tail[newline + 1 :]
     return "[index truncated — showing the most recent entries]\n" + tail
+
+
+LINK_TEXT_BUDGET = 15_000
+
+LINK_SUMMARY_TEMPLATE = """\
+You are the curator of a personal reading list.
+
+For the article at {url}, respond with JSON only, matching this schema:
+{{"title": <string>, "summary": <string, 2-3 sentences, max 300 chars>, "tags": <list of 0-5 lowercase-kebab strings>, "author": <string or null>, "published": <ISO date string or null>}}
+
+- title: the article's real title when present, otherwise a descriptive one.
+- summary: the article's core claim and what a future reader gets from it.
+- author: the byline author when present, else null.
+- published: the publish date as YYYY-MM-DD when present, else null.
+"""
+
+
+class LinkDecision(BaseModel):
+    """The LLM's digest of one fetched link.
+
+    All fields are nullable with None defaults so a partial response still
+    parses; the ingest pipeline applies its own fallbacks (title from the
+    URL slug) and stores null summary when the LLM produced nothing.
+    """
+
+    title: str | None = None
+    summary: str | None = None
+    author: str | None = None
+    published: str | None = None
+    tags: list[str] = []
+
+
+def build_link_summary_prompt(url: str, text: str) -> list[dict]:
+    """Build OpenAI-style messages summarizing the fetched article text."""
+    system = LINK_SUMMARY_TEMPLATE.format(url=url)
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": text[:LINK_TEXT_BUDGET]},
+    ]
+
+
+def build_url_extract_prompt(url: str) -> list[dict]:
+    """Build messages asking the LLM to extract the article content at `url`."""
+    return [
+        {
+            "role": "user",
+            "content": (
+                f"Extract the main article content of {url} as clean markdown. "
+                "No commentary."
+            ),
+        },
+    ]

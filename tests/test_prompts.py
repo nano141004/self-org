@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import json
 
-from pal.agent.prompts import IngestDecision, build_classification_prompt
+from pal.agent.prompts import (
+    IngestDecision,
+    LinkDecision,
+    build_classification_prompt,
+    build_link_summary_prompt,
+)
 
 SCHEMA_MD = (
     "# Schema\n\nEvery markdown file carries YAML frontmatter with `id`, "
@@ -81,3 +86,21 @@ def _fake_index(n: int) -> str:
 def test_prompt_under_32k_with_1000_line_index():
     prompt = build_classification_prompt(RAW_TEXT, SCHEMA_MD, _fake_index(1000))
     assert len(json.dumps(prompt)) <= 32_000
+
+
+def test_link_decision_full_parse():
+    d = LinkDecision.model_validate_json(
+        '{"title": "T", "summary": "S", "author": "A", "published": "2026-01-02", "tags": ["x"]}')
+    assert d.title == "T" and d.tags == ["x"]
+
+
+def test_link_decision_partial_parse():
+    d = LinkDecision.model_validate_json('{"title": "T"}')
+    assert d.summary is None and d.tags == []
+
+
+def test_link_summary_prompt_embeds_url_and_truncates():
+    msgs = build_link_summary_prompt("https://example.com/p", "x" * 20_000)
+    assert "https://example.com/p" in msgs[0]["content"]
+    assert "json" in msgs[0]["content"].lower()
+    assert len(msgs[1]["content"]) == 15_000

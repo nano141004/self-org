@@ -58,8 +58,9 @@ is the single source of truth; swap the CLI for a GUI and nothing in the
 engine changes.
 
 **`pal/agent/` is the LLM layer** (Phase 2a): cross-cutting infrastructure
-imported by the engine for classification. It never imports `engine`, `mcp`,
-or `cli` — it only reads `pal/config.py` and talks to litellm.
+imported by the engine for classification and (Phase 2b) link extraction. It
+never imports `engine`, `mcp`, or `cli` — it only reads `pal/config.py` and
+talks to litellm.
 
 ## 3. Repo layout
 
@@ -68,10 +69,11 @@ self-org/
 ├── pal/                        # the Python package (the code)
 │   ├── __init__.py             # __version__
 │   ├── config.py               # settings: BRAIN_DIR + LLM model/key env
-│   ├── agent/                  # LLM abstraction — imported by engine (2a)
+│   ├── agent/                  # LLM abstraction — imported by engine (2a, 2b)
 │   │   ├── __init__.py
 │   │   ├── llm.py              # complete() — retries, key×model rotation
-│   │   └── prompts.py          # classification prompt + IngestDecision
+│   │   ├── prompts.py          # classification + link-summary prompts, decisions
+│   │   └── fetch.py            # extract_article() — LLM URL-context fetcher (2b)
 │   ├── engine/                 # ALL business logic — plain functions
 │   │   ├── __init__.py
 │   │   ├── errors.py           # typed exceptions used across the engine
@@ -91,11 +93,12 @@ self-org/
 │   │   └── server.py           # FastMCP stdio server, 2 tools
 │   └── cli/
 │       └── main.py             # Typer CLI: init / add / ask / lint / reindex
-├── tests/                      # pytest suite (129 tests; 3 live)
+├── tests/                      # pytest suite (136 tests; 3 live)
 │   ├── conftest.py             # fixtures: isolated BRAIN_DIR + cleared LLM keys
 │   ├── test_config.py          # settings: defaults + env splitting
 │   ├── test_llm.py             # LLM wrapper: rotation, budgets, parsing
 │   ├── test_prompts.py         # classification prompt + IngestDecision shape
+│   ├── test_agent_fetch.py     # extract_article + url-extract prompt
 │   ├── test_{ids,paths,schema,files,git}.py    # storage tests (ported)
 │   ├── test_engine_ingest.py   # add_thought classify pipeline + link notes
 │   ├── test_ingest_live.py     # live LLM classification (skipped by default)
@@ -183,6 +186,40 @@ model lists + keys from `get_settings()` only; never imports engine/mcp/cli.
   keeping the most recent entries (newest notes best reflect the current
   taxonomy), with a notice line — so the serialized prompt stays ≤ 32k chars
   even with a 1000-line INDEX.md (spec AC 10; guarded by a synthetic test).
+- `LinkDecision(BaseModel)` — `title: str | None`, `summary: str | None`,
+  `author: str | None`, `published: str | None`, `tags: list[str]` — all
+  nullable with `None` defaults (empty list for `tags`) so a partial LLM
+  response still parses; the ingest pipeline applies its own fallbacks (title
+  from the URL slug) and stores null summary when the LLM produced nothing.
+- `build_link_summary_prompt(url, text) -> list[dict]` — system + user
+  messages for digesting one fetched link. The system prompt (from
+  `LINK_SUMMARY_TEMPLATE`) embeds the curator rules (real title, 2-3-sentence
+  summary ≤300 chars, 0-5 lowercase-kebab tags, byline author, `published` as
+  `YYYY-MM-DD` else null) and a "respond with JSON only" instruction matching
+  `LinkDecision`. The user message is `text` truncated to
+  `LINK_TEXT_BUDGET = 15_000` chars.
+- `build_url_extract_prompt(url) -> list[dict]` — single user message asking
+  for the main article content at `url` as clean markdown, no commentary.
+  Consumed by `pal/agent/fetch.py`.
+
+### `pal/agent/fetch.py` — LLM URL-context fetcher (Phase 2b)
+
+Cross-cutting infrastructure: the engine's Phase 2b fallback fetcher. Never
+imports engine/mcp/cli.
+
+- `URL_CONTEXT_TOOLS = [{"url_context": {}}]` — passed to `complete()` as an
+  opaque litellm opt (the provider's URL-context tool, if it has one).
+- `extract_article(url) -> str` — `complete(build_url_extract_prompt(url),
+  tools=URL_CONTEXT_TOOLS)`; returns the stripped completion text (`""` when
+  the result is not a string); `LLMUnavailableError` propagates to the caller.
+  Key/model rotation and the 15 s / 6-attempt global budget in `llm.py` apply.
+- Used by `pal/engine/fetch.py` as the LLM pass when trafilatura extraction is
+  too thin; any failure there becomes `FetchError` (the URL stays the
+  recoverable artifact).
+- **Spike finding (live):** the `tools=[{"url_context": {}}]` kwarg is accepted
+  by litellm and honored by the Gemini provider — a live probe returned a real
+  one-sentence answer about `https://en.wikipedia.org/wiki/Personal_wiki`.
+  (Task 2, 2026-09-01.)
 
 ### `pal/storage/` — the I/O layer (ported as-is from the old `brain`)
 
@@ -285,8 +322,7 @@ No behavior was changed in the rename; tests were kept passing in substance.
        `FetchError`; still too thin → `FetchError`
     5. returned text already capped at `MAX_BODY_CHARS`
   - `_client()` — module-level httpx.Client factory (a monkeypatchable seam for
-    tests). The LLM seam lives in `pal/agent/fetch.py` (ships in Task 2; a temp
-    stub keeps tests isolated until then).
+    tests). The LLM seam is `pal/agent/fetch.extract_article`.
 - **`triage.py`** — deterministic URL-only router (Phase 2a):
   - `Route` — frozen dataclass `(kind, url)`; `kind` is `"link"`
   - `route(content) -> Route | None` — pure, no I/O, no LLM: strips content;
@@ -405,7 +441,7 @@ or move files freely because cross-references are by `id`, never by path.
 ## 8. Tests — how to run and what they guard
 
 ```powershell
-.venv\Scripts\python -m pytest            # full suite (129 tests; 3 live skipped)
+.venv\Scripts\python -m pytest            # full suite (136 tests; 3 live skipped)
 .venv\Scripts\python -m pytest -m live    # live LLM tests (needs GEMINI_API_KEY)
 .venv\Scripts\python -m pytest tests\test_engine_imports.py   # dependency rule (engine + agent)
 .venv\Scripts\python -m pytest --cov=pal.storage --cov-report=term-missing
