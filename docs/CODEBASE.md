@@ -51,8 +51,9 @@ The engine is deliberately split from the interfaces:
                      ~/brain/  (markdown + git)
 ```
 
-**The dependency rule (enforced by a test):** `pal/engine/` never imports
-`pal/mcp/` or `pal/cli/`. Interfaces never contain business logic. The engine
+**The dependency rule (enforced by tests):** `pal/engine/` never imports
+`pal/mcp/` or `pal/cli/`, and `pal/agent/` never imports `pal/engine`,
+`pal/mcp`, or `pal/cli`. Interfaces never contain business logic. The engine
 is the single source of truth; swap the CLI for a GUI and nothing in the
 engine changes.
 
@@ -89,7 +90,7 @@ self-org/
 │   │   └── server.py           # FastMCP stdio server, 2 tools
 │   └── cli/
 │       └── main.py             # Typer CLI: init / add / ask / lint / reindex
-├── tests/                      # pytest suite (105 tests)
+├── tests/                      # pytest suite (118 tests; 3 live)
 │   ├── conftest.py             # tmp_brain fixture (isolated BRAIN_DIR per test)
 │   ├── test_config.py          # settings: defaults + env splitting
 │   ├── test_llm.py             # LLM wrapper: rotation, budgets, parsing
@@ -99,7 +100,7 @@ self-org/
 │   ├── test_ingest_live.py     # live LLM classification (skipped by default)
 │   ├── test_triage.py          # URL-only routing (route/Route)
 │   ├── test_engine_stubs.py    # phase stubs raise the right error
-│   ├── test_engine_imports.py  # THE dependency-rule guard
+│   ├── test_engine_imports.py  # THE dependency-rule guard (engine + agent)
 │   ├── test_reading_list.py    # reading-list domain
 │   ├── test_cli_add.py         # CLI commands
 │   └── test_mcp.py             # MCP server tools
@@ -358,7 +359,8 @@ or move files freely because cross-references are by `id`, never by path.
 4. **No stubs over MCP** — an MCP client can never call a tool that raises
    "not implemented". CLI can print placeholders (a human reads it).
 5. **Engine-first + dependency rule** — logic in `pal/engine/` only; engine
-   never imports mcp/cli (guarded by `tests/test_engine_imports.py`).
+   never imports mcp/cli, and agent never imports engine/mcp/cli (guarded by
+   `tests/test_engine_imports.py`).
 
 ## 7. What's implemented vs. stubbed (as of Phase 2a)
 
@@ -377,9 +379,9 @@ or move files freely because cross-references are by `id`, never by path.
 ## 8. Tests — how to run and what they guard
 
 ```powershell
-.venv\Scripts\python -m pytest            # full suite (114 tests; live skipped)
+.venv\Scripts\python -m pytest            # full suite (118 tests; 3 live skipped)
 .venv\Scripts\python -m pytest -m live    # live LLM tests (needs GEMINI_API_KEY)
-.venv\Scripts\python -m pytest tests\test_engine_imports.py   # dependency rule
+.venv\Scripts\python -m pytest tests\test_engine_imports.py   # dependency rule (engine + agent)
 .venv\Scripts\python -m pytest --cov=pal.storage --cov-report=term-missing
 ```
 
