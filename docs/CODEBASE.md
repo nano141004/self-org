@@ -418,13 +418,15 @@ No behavior was changed in the rename; tests were kept passing in substance.
 Exactly two tools, both fully working (never expose a stub over MCP):
 
 - `add_to_brain(content, source_url=None, category_hint=None)` — same note
-  format as `pal add`; `source_url` present routes to a minimal
-  reading-list note (`add_link_note`, no LLM call, no body appendix),
-  otherwise content flows through `add_thought`'s classify pipeline; returns
-  `{status: "stored"|"inbox", path, id}` (link notes report `stored` via
-  `class_path="reading-list"`)
+  format as `pal add`; `source_url` present routes through the full
+  `add_link` ingestion (fetch + summary + metadata; the user's `content` is
+  quoted atop the article body), otherwise content flows through
+  `add_thought`'s classify pipeline; returns
+  `{status: "stored"|"inbox"|"duplicate", path, id}` — `"duplicate"` when the
+  URL was already summarized (skipped), link notes report `stored` via
+  `class_path="reading-list"`
 - `get_reading_list(topic=None, status=None)` — returns
-  `[{title, url, summary, date_added}]` via `list_items`
+  `[{title, url, summary, date_added, author, published}]` via `list_items`
 
 `main()` runs the stdio server; entry point `pal-mcp`.
 

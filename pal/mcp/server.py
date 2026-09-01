@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastmcp import FastMCP
 
-from pal.engine.ingest import add_link_note, add_thought
+from pal.engine.ingest import add_link, add_thought
 from pal.engine.reading_list import list_items
 from pal.storage.paths import brain_dir
 
@@ -19,20 +19,23 @@ def add_to_brain(
     """Capture one thought into the brain.
 
     Args:
-        content: The thought text to store. When source_url is given, it is
-            filed as the link note's body.
-        source_url: Optional source URL; routes to a minimal reading-list
-            note (no LLM call, no body appendix). Full link ingestion
-            (fetch + summary) arrives in Phase 2b.
-        category_hint: Optional class path, e.g. "marketing/cold-email".
-            Omit to send the thought to inbox/.
+        content: The thought text to store; with source_url, the user's
+            commentary quoted atop the fetched article.
+        source_url: Optional source URL; runs the full link ingestion
+            (fetch + summary + metadata). Duplicates return status "duplicate".
+        category_hint: Optional class path for text thoughts, e.g.
+            "marketing/cold-email". Omit to send the thought to inbox/.
     """
     if source_url:
-        result = add_link_note(source_url, body_text=content)
+        result = add_link(source_url, note=content or None)
     else:
         result = add_thought(content, into=category_hint)
+    if source_url and result.action == "skipped-duplicate":
+        status = "duplicate"
+    else:
+        status = "stored" if result.class_path else "inbox"
     return {
-        "status": "stored" if result.class_path else "inbox",
+        "status": status,
         "path": result.path.relative_to(brain_dir()).as_posix(),
         "id": result.id,
     }
@@ -55,6 +58,8 @@ def get_reading_list(
             "url": item.url,
             "summary": item.summary,
             "date_added": item.date_added,
+            "author": item.author,
+            "published": item.published,
         }
         for item in list_items(topic=topic, status=status)
     ]

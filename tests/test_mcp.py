@@ -4,14 +4,18 @@ import asyncio
 import re
 from pathlib import Path
 
-from pal.agent.prompts import IngestDecision
-from pal.mcp.server import mcp
+from pal.agent.prompts import IngestDecision, LinkDecision
+from pal.engine.fetch import FetchError, FetchedPage
+from pal.mcp.server import add_to_brain, get_reading_list, mcp
 from pal.storage import schema
 from pal.storage.files import read_note, write_note
 from pal.storage.paths import brain_dir, reading_list_path_for
 
 
 ULID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
+
+PAGE = FetchedPage(url="https://e.com/a", text="Body. " * 50, via="trafilatura")
+DECISION = LinkDecision(title="A Great Article", summary="Short summary.")
 
 # fastmcp 3.x: list_tools() and get_tool() are coroutines; Tool.fn is the
 # underlying plain function.
@@ -77,8 +81,13 @@ def test_add_to_brain_category_hint_lands_in_raw(tmp_brain: Path):
     assert fm["classified_into"] == "marketing/cold-email"
 
 
-def test_add_to_brain_source_url_files_link_note(tmp_brain: Path):
+def test_add_to_brain_source_url_files_minimal_note_on_fetch_failure(
+    tmp_brain: Path, mocker
+):
     schema.ensure_brain_initialized()
+    mocker.patch(
+        "pal.engine.ingest.fetch_article", side_effect=FetchError("boom")
+    )
     out = _tool_fn("add_to_brain")("test thought", source_url="https://example.com/x")
     assert out["status"] == "stored"
     assert out["path"].startswith("reading-list/")
@@ -93,12 +102,17 @@ def test_add_to_brain_source_url_files_link_note(tmp_brain: Path):
     assert fm["summary"] is None
 
 
-def test_add_to_brain_source_url_does_not_append_to_body(tmp_brain: Path):
+def test_add_to_brain_source_url_does_not_append_source_to_body(
+    tmp_brain: Path, mocker
+):
     schema.ensure_brain_initialized()
+    mocker.patch(
+        "pal.engine.ingest.fetch_article", side_effect=FetchError("boom")
+    )
     out = _tool_fn("add_to_brain")("test thought", source_url="https://example.com/x")
     fm, body = read_note(brain_dir() / out["path"])
     assert "Source: https://example.com/x" not in body
-    assert body.strip() == "test thought"
+    assert body.startswith("Fetch failed: boom")
     assert fm["type"] == "reading"
     assert fm["url"] == "https://example.com/x"
 
@@ -159,6 +173,8 @@ def test_get_reading_list_returns_items_with_summary_fields(tmp_brain: Path):
         "url": "https://example.com/1",
         "summary": None,
         "date_added": "2026-04-26T14:32:00Z",
+        "author": None,
+        "published": None,
     }
 
 
@@ -166,3 +182,43 @@ def test_call_tool_end_to_end(tmp_brain: Path):
     schema.ensure_brain_initialized()
     result = asyncio.run(mcp.call_tool("get_reading_list", {"status": "unread"}))
     assert result.is_error is False
+
+
+def test_add_to_brain_source_url_full_flow(tmp_brain, mocker):
+    from pal.storage import schema
+
+    schema.ensure_brain_initialized()
+    mocker.patch("pal.engine.ingest.fetch_article", return_value=PAGE)
+    mocker.patch("pal.engine.ingest.complete", return_value=DECISION)
+    out = add_to_brain(content="worth a read", source_url="https://e.com/a")
+    assert out["status"] == "stored"
+    fm, body = read_note(brain_dir() / out["path"])
+    assert fm["summary"] == "Short summary."
+    assert "> worth a read" in body
+
+
+def test_add_to_brain_duplicate_status(tmp_brain, mocker):
+    from pal.storage import schema
+
+    schema.ensure_brain_initialized()
+    mocker.patch("pal.engine.ingest.fetch_article", return_value=PAGE)
+    mocker.patch("pal.engine.ingest.complete", return_value=DECISION)
+    add_to_brain(content="", source_url="https://e.com/a")
+    out = add_to_brain(content="", source_url="https://e.com/a")
+    assert out["status"] == "duplicate"
+
+
+def test_get_reading_list_includes_author_published(tmp_brain):
+    from pal.storage import schema
+
+    schema.ensure_brain_initialized()
+    d = brain_dir() / "reading-list"
+    d.mkdir(parents=True)
+    (d / "01A--x.md").write_text(
+        "---\nid: 01A\ntitle: X\nurl: https://e.com/a\nstatus: unread\n"
+        'summary: "s"\nauthor: "Ada"\npublished: "2026-01-02"\n---\n',
+        encoding="utf-8",
+    )
+    items = get_reading_list()
+    assert items[0]["author"] == "Ada"
+    assert items[0]["published"] == "2026-01-02"
