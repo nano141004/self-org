@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -33,6 +32,11 @@ class Settings(BaseSettings):
         default_factory=list,
         validation_alias=AliasChoices("GEMINI_API_KEYS", "GEMINI_API_KEY"),
     )
+    gemini_api_key: str | None = Field(
+        default=None,
+        validation_alias="GEMINI_API_KEY",
+        exclude=True,
+    )
     llm_embedding_model: str = Field(
         "gemini/text-embedding-004",
         validation_alias="PAL_LLM_EMBEDDING_MODEL",
@@ -58,13 +62,14 @@ class Settings(BaseSettings):
     @classmethod
     def _split_api_keys(cls, value: object) -> object:
         if isinstance(value, str):
-            keys = [key.strip() for key in value.split(",") if key.strip()]
-            if not keys:
-                single = os.getenv("GEMINI_API_KEY")
-                if single:
-                    keys = [single.strip()]
-            return keys
+            return [key.strip() for key in value.split(",") if key.strip()]
         return value
+
+    @model_validator(mode="after")
+    def _fallback_api_key(self) -> Settings:
+        if not self.llm_api_keys and self.gemini_api_key:
+            self.llm_api_keys = [self.gemini_api_key.strip()]
+        return self
 
 
 @lru_cache(maxsize=1)

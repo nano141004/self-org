@@ -46,3 +46,14 @@ def test_api_key_used_when_list_empty(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "k")
     s = _fresh_settings(monkeypatch)
     assert s.llm_api_keys == ["k"]
+
+
+def test_api_key_fallback_from_dotenv(tmp_path, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEYS", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "GEMINI_API_KEYS=\nGEMINI_API_KEY=secret-key\n", encoding="utf-8"
+    )
+    s = Settings(_env_file=env_file)
+    assert s.llm_api_keys == ["secret-key"]

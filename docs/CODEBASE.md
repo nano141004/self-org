@@ -80,7 +80,7 @@ self-org/
 │   │   └── server.py           # FastMCP stdio server, 2 tools
 │   └── cli/
 │       └── main.py             # Typer CLI: init / add / ask / lint / reindex
-├── tests/                      # pytest suite (77 tests)
+├── tests/                      # pytest suite (78 tests)
 │   ├── conftest.py             # tmp_brain fixture (isolated BRAIN_DIR per test)
 │   ├── test_config.py          # settings: defaults + env splitting
 │   ├── test_{ids,paths,schema,files,git}.py    # storage tests (ported)
@@ -113,7 +113,10 @@ Brain data (`~/brain/`) never lives inside this repo.
   - `llm_fallback_models` — `PAL_LLM_FALLBACK_MODELS`, comma-separated,
     default `["gemini/gemini-2.5-flash-lite", "gemini/gemini-2.0-flash"]`
   - `llm_api_keys` — `GEMINI_API_KEYS`, comma-separated; falls back to
-    `GEMINI_API_KEY` (single key) when empty
+    `GEMINI_API_KEY` (single key) when empty, via a hidden
+    `gemini_api_key` field (`exclude=True`) and a
+    `model_validator(mode="after")` — so the fallback works for both
+    os-env and `.env`-file values
   - `llm_embedding_model` — `PAL_LLM_EMBEDDING_MODEL`, default
     `gemini/text-embedding-004` (set but unused until Phase 5)
 - List fields use `NoDecode` + comma-splitting validators (trim whitespace,
@@ -268,7 +271,7 @@ or move files freely because cross-references are by `id`, never by path.
 ## 8. Tests — how to run and what they guard
 
 ```powershell
-.venv\Scripts\python -m pytest            # full suite (77 tests)
+.venv\Scripts\python -m pytest            # full suite (78 tests)
 .venv\Scripts\python -m pytest tests\test_engine_imports.py   # dependency rule
 .venv\Scripts\python -m pytest --cov=pal.storage --cov-report=term-missing
 ```
