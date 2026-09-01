@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pal.config import Settings, get_settings, reset_settings_cache
+from pal.config import Settings, reset_settings_cache
 
 LLM_ENVS = (
     "PAL_LLM_PRIMARY_MODEL",
@@ -13,7 +13,7 @@ LLM_ENVS = (
 
 def _fresh_settings(monkeypatch) -> Settings:
     reset_settings_cache()
-    return get_settings()
+    return Settings(_env_file=None)
 
 
 def test_defaults_when_no_llm_env(monkeypatch):
