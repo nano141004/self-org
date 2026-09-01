@@ -8,6 +8,7 @@ from unittest.mock import Mock
 
 from typer.testing import CliRunner
 
+from pal.agent.llm import LLMUnavailableError
 from pal.agent.prompts import IngestDecision
 from pal.cli.main import app
 from pal.engine.triage import Route
@@ -218,6 +219,30 @@ def test_add_dry_run_link_prints_reading_list_route(tmp_brain: Path, monkeypatch
     assert result.exit_code == 0, result.output
     assert "[dry-run] -> reading-list: article" in result.output
     assert list((tmp_brain / "reading-list").glob("*.md")) == []
+
+
+def test_add_dry_run_requires_init(tmp_brain: Path):
+    tmp_brain.mkdir(parents=True, exist_ok=True)
+    result = runner.invoke(app, ["add", "--dry-run", "some text"])
+    assert result.exit_code == 1
+    assert "Brain not initialized" in result.stderr
+    assert "[dry-run]" not in result.output
+
+
+def test_add_dry_run_llm_failure_warns_and_previews_inbox(tmp_brain: Path, monkeypatch):
+    runner.invoke(app, ["init"])
+
+    def _boom(text: str):
+        raise LLMUnavailableError("all LLM candidates failed after 6 attempts")
+
+    monkeypatch.setattr("pal.cli.main.classify_thought", _boom)
+    result = runner.invoke(app, ["add", "--dry-run", "some thought"])
+    assert result.exit_code == 0, result.output
+    assert (
+        "[warn] LLM unavailable: all LLM candidates failed after 6 attempts"
+        in result.stderr
+    )
+    assert "[dry-run] -> inbox: some thought" in result.output
 
 
 def test_add_why_prints_rationale(tmp_brain: Path, monkeypatch):

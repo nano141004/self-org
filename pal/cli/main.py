@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import typer
 
+from pal.agent.llm import LLMUnavailableError
 from pal.engine.errors import (
     BrainNotInitializedError,
     EmptyThoughtError,
@@ -33,7 +34,7 @@ def _dry_run(text: str, into: str | None, why: bool) -> None:
         return
     try:
         outcome = classify_thought(text)
-    except Exception as exc:
+    except LLMUnavailableError as exc:
         typer.echo(f"[warn] LLM unavailable: {exc}", err=True)
         title = derive_title(text) or "untitled"
         typer.echo(f"[dry-run] -> inbox: {title}")

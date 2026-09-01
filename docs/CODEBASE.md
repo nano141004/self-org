@@ -289,9 +289,11 @@ No behavior was changed in the rename; tests were kept passing in substance.
   `[{id}] -> {where}: {title}`. `--dry-run` prints the decision
   (`[dry-run] -> …`) and writes nothing; with `--into` it is deterministic
   (zero LLM calls), otherwise it calls the engine's `classify_thought` seam
-  (route + classification, no writes). `--why` appends the stored decision's
-  rationale (`IngestResult.rationale`) — no extra LLM call; dry-run shows the
-  seam's rationale directly. `IngestResult.warning` is echoed as
+  (route + classification, no writes). Dry-run maps the same engine errors to
+  the same exit codes; only genuine LLM-layer failures (`LLMUnavailableError`)
+  show `[warn] …` + an `inbox` preview with exit 0. `--why` appends the stored
+  decision's rationale (`IngestResult.rationale`) — no extra LLM call; dry-run
+  shows the seam's rationale directly. `IngestResult.warning` is echoed as
   `[warn] <warning>` on stderr with exit code 0.
 - `ask "<question>"` / `lint` — call engine, catch
   `NotImplementedPhaseError`, print "coming in Phase N"
@@ -373,7 +375,7 @@ or move files freely because cross-references are by `id`, never by path.
 ## 8. Tests — how to run and what they guard
 
 ```powershell
-.venv\Scripts\python -m pytest            # full suite (112 tests; live skipped)
+.venv\Scripts\python -m pytest            # full suite (114 tests; live skipped)
 .venv\Scripts\python -m pytest -m live    # live LLM tests (needs GEMINI_API_KEY)
 .venv\Scripts\python -m pytest tests\test_engine_imports.py   # dependency rule
 .venv\Scripts\python -m pytest --cov=pal.storage --cov-report=term-missing
