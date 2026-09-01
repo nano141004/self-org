@@ -90,7 +90,7 @@ self-org/
 │   │   └── server.py           # FastMCP stdio server, 2 tools
 │   └── cli/
 │       └── main.py             # Typer CLI: init / add / ask / lint / reindex
-├── tests/                      # pytest suite (118 tests; 3 live)
+├── tests/                      # pytest suite (121 tests; 3 live)
 │   ├── conftest.py             # tmp_brain fixture (isolated BRAIN_DIR per test)
 │   ├── test_config.py          # settings: defaults + env splitting
 │   ├── test_llm.py             # LLM wrapper: rotation, budgets, parsing
@@ -266,9 +266,10 @@ No behavior was changed in the rename; tests were kept passing in substance.
   - `Route` — frozen dataclass `(kind, url)`; `kind` is `"link"`
   - `route(content) -> Route | None` — pure, no I/O, no LLM: strips content;
     whole content is a single URL (`https?://\S+`) → link route; else the
-    first line contains a URL AND remaining content ≤200 chars → link route
-    with that URL; multi-URL → first URL wins (rest stays in the note body);
-    everything else → `None` (needs LLM). Schemeless `www.` links → `None`.
+    first line contains a URL AND the text after that URL ≤200 chars → link
+    route with that URL; multi-URL → first URL wins (rest stays in the note
+    body); everything else → `None` (needs LLM). Schemeless `www.` links →
+    `None`.
     Consumed by `add_thought` to short-circuit URLs into reading-list notes
     without an LLM call.
 - **`reading_list.py`** — the link queue (minimal Phase 1 version):
@@ -379,7 +380,7 @@ or move files freely because cross-references are by `id`, never by path.
 ## 8. Tests — how to run and what they guard
 
 ```powershell
-.venv\Scripts\python -m pytest            # full suite (118 tests; 3 live skipped)
+.venv\Scripts\python -m pytest            # full suite (121 tests; 3 live skipped)
 .venv\Scripts\python -m pytest -m live    # live LLM tests (needs GEMINI_API_KEY)
 .venv\Scripts\python -m pytest tests\test_engine_imports.py   # dependency rule (engine + agent)
 .venv\Scripts\python -m pytest --cov=pal.storage --cov-report=term-missing

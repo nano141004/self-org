@@ -18,7 +18,7 @@ def route(content: str) -> Route | None:
     """Deterministic URL-only routing: link captures become reading-list items.
 
     Returns a link Route when the whole content is a single URL, or when the
-    first line contains a URL and the remaining content is at most 200 chars.
+    first line contains a URL and the text after that URL is at most 200 chars.
     Everything else (long prose, schemeless `www.` links) returns None and
     needs the LLM.
     """
@@ -30,9 +30,8 @@ def route(content: str) -> Route | None:
         return Route(kind="link", url=text)
 
     lines = text.splitlines()
-    rest = "\n".join(lines[1:])
     match = URL_PATTERN.search(lines[0])
-    if match and len(rest) <= MAX_REST:
+    if match and len(text[match.end() :]) <= MAX_REST:
         return Route(kind="link", url=match.group(0))
 
     return None

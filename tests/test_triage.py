@@ -27,3 +27,20 @@ def test_route_long_non_url_text_returns_none():
 
 def test_route_www_without_scheme_returns_none():
     assert route("www.example.com") is None
+
+
+def test_route_rest_exactly_200_routes():
+    text = "https://example.com/a " + "x" * 199
+    assert len(text[len("https://example.com/a"):]) == 200
+    assert route(text) == Route(kind="link", url="https://example.com/a")
+
+
+def test_route_rest_201_returns_none():
+    text = "https://example.com/a " + "x" * 200
+    assert len(text[len("https://example.com/a"):]) == 201
+    assert route(text) is None
+
+
+def test_route_single_line_url_plus_long_prose_returns_none():
+    text = "https://example.com/a " + "y" * 300
+    assert route(text) is None
