@@ -222,25 +222,33 @@ No behavior was changed in the rename; tests were kept passing in substance.
     Phase {phase}"`. The CLI catches it to print "coming in Phase N".
 - **`ingest.py`** — capture:
   - `IngestResult` — frozen dataclass `(id, title, path, class_path,
-    warning=None)`; `warning` carries the LLM-failure message when a thought
-    had to fall back to `inbox/`
+    warning=None, rationale=None)`; `warning` carries the LLM-failure message
+    when a thought had to fall back to `inbox/`; `rationale` carries the
+    classifier's reasoning when the LLM succeeded (drives `pal add --why`
+    without a second LLM call)
   - `add_thought(text, into=None) -> IngestResult` — the core op:
     1. strip text; empty → `EmptyThoughtError`; brain not initialized →
        `BrainNotInitializedError`
     2. `into` given → deterministic path, **zero LLM calls**: file under
        `raw/YYYY/MM/DD/` with `classified_into` set
-    3. `route(text)` → link → `add_link_note(url, body_text=rest)`
-    4. else classify: read SCHEMA.md + INDEX.md (missing → `""`),
-       `build_classification_prompt`, `complete(response_model=IngestDecision)`;
-       validate: `class_path` None/empty → None; `slug` through `_derive_slug`
-       (≤60, kebab, ASCII); `title` stripped ≤100, fallback `"untitled"`; `body`
-       fallback to raw text
+    3. else `classify_thought` → `Route` (link) → `add_link_note(url,
+       body_text=rest)`
+    4. `classify_thought` → `IngestDecision`; validate: `class_path` None/empty
+       → None; `slug` through `_derive_slug` (≤60, kebab, ASCII); `title`
+       stripped ≤100, fallback `"untitled"`; `body` fallback to raw text;
+       `rationale` stripped, `None` when empty
     5. `class_path` set → `raw/YYYY/MM/DD/` with `classified_into`; null →
        `inbox/`. Frontmatter `type: fleeting` as before. INDEX + LOG + one
        commit `ingest: <title>`
     6. any LLM-layer exception (incl. `LLMUnavailableError`) → inbox note with
        raw text, LOG `ingest` payload gains `llm_error`, `IngestResult.warning`
        set (`LLM unavailable: <msg>`) — a thought is never dropped
+  - `classify_thought(text) -> Route | IngestDecision` — the no-write classify
+    seam: same guards as `add_thought` (empty text, uninitialized brain); URL
+    text → `Route` (link); everything else → build prompt + `complete(
+    response_model=IngestDecision)`. LLM-layer exceptions propagate — callers
+    decide the fallback (ingest → inbox/, dry-run → preview). Used by
+    `add_thought` and `pal add --dry-run`.
   - `add_link_note(url, body_text=None) -> IngestResult` — minimal
     reading-list note: `url` has trailing punctuation stripped
     (`.,;:!?` and `)]}` — the router's regex keeps it); title = last URL path
@@ -251,8 +259,8 @@ No behavior was changed in the rename; tests were kept passing in substance.
     `reading_list_path_for`; INDEX class `reading-list`, LOG op `ingest`; one
     commit; returns `IngestResult(class_path="reading-list")`
   - `add_link(url, ...)` — stub: `NotImplementedPhaseError("add_link", "2b")`
-  - `_derive_slug` / `_derive_title` / `_clean_url` / `_derive_link_title` —
-    private helpers (tested)
+  - `derive_title` / `clean_url` / `derive_link_title` — public derivations
+    (tested); `_derive_slug` stays private
 - **`triage.py`** — deterministic URL-only router (Phase 2a):
   - `Route` — frozen dataclass `(kind, url)`; `kind` is `"link"`
   - `route(content) -> Route | None` — pure, no I/O, no LLM: strips content;
@@ -280,11 +288,11 @@ No behavior was changed in the rename; tests were kept passing in substance.
   maps engine errors to exit codes (empty text → 2, uninitialized → 1); prints
   `[{id}] -> {where}: {title}`. `--dry-run` prints the decision
   (`[dry-run] -> …`) and writes nothing; with `--into` it is deterministic
-  (zero LLM calls), otherwise it runs the same route + classification steps
-  (public `triage.route` / `agent.prompts.build_classification_prompt` /
-  `agent.llm.complete`). `--why` appends `rationale: <…>`; titles/slugs in
-  dry-run mirror the engine's derivations. `IngestResult.warning` is echoed
-  as `[warn] <warning>` on stderr with exit code 0.
+  (zero LLM calls), otherwise it calls the engine's `classify_thought` seam
+  (route + classification, no writes). `--why` appends the stored decision's
+  rationale (`IngestResult.rationale`) — no extra LLM call; dry-run shows the
+  seam's rationale directly. `IngestResult.warning` is echoed as
+  `[warn] <warning>` on stderr with exit code 0.
 - `ask "<question>"` / `lint` — call engine, catch
   `NotImplementedPhaseError`, print "coming in Phase N"
 - `reindex` — prints "coming in Phase 5" (no engine seam yet)
@@ -365,7 +373,7 @@ or move files freely because cross-references are by `id`, never by path.
 ## 8. Tests — how to run and what they guard
 
 ```powershell
-.venv\Scripts\python -m pytest            # full suite (110 tests; live skipped)
+.venv\Scripts\python -m pytest            # full suite (112 tests; live skipped)
 .venv\Scripts\python -m pytest -m live    # live LLM tests (needs GEMINI_API_KEY)
 .venv\Scripts\python -m pytest tests\test_engine_imports.py   # dependency rule
 .venv\Scripts\python -m pytest --cov=pal.storage --cov-report=term-missing

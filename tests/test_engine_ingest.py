@@ -15,7 +15,13 @@ from pal.engine.errors import (
     EmptyThoughtError,
     NotImplementedPhaseError,
 )
-from pal.engine.ingest import IngestResult, _derive_slug, _derive_title, add_link, add_thought
+from pal.engine.ingest import (
+    IngestResult,
+    _derive_slug,
+    add_link,
+    add_thought,
+    derive_title,
+)
 from pal.storage import schema
 from pal.storage.files import read_note
 
@@ -49,16 +55,16 @@ def test_derive_slug_fallback():
 
 
 def test_derive_title_first_sentence():
-    assert _derive_title("Hello world. Second sentence.") == "Hello world"
+    assert derive_title("Hello world. Second sentence.") == "Hello world"
 
 
 def test_derive_title_first_line():
-    assert _derive_title("first line\nsecond line") == "first line"
+    assert derive_title("first line\nsecond line") == "first line"
 
 
 def test_derive_title_caps_at_100():
     text = "x" * 200
-    assert len(_derive_title(text)) == 100
+    assert len(derive_title(text)) == 100
 
 
 # ---------- add_thought ----------
@@ -302,6 +308,24 @@ def test_add_thought_sanitizes_decision_slug(tmp_brain: Path, monkeypatch):
     assert result.path.name.endswith("--my-title.md")
 
 
+def test_add_thought_carries_decision_rationale(tmp_brain: Path, monkeypatch):
+    schema.ensure_brain_initialized()
+    monkeypatch.setattr(
+        "pal.engine.ingest.complete",
+        _fake_complete(
+            IngestDecision(
+                class_path="marketing/cold-email",
+                slug="cold-email",
+                title="T",
+                body="b",
+                rationale="fits the existing class",
+            )
+        ),
+    )
+    result = add_thought("some thought")
+    assert result.rationale == "fits the existing class"
+
+
 def test_add_thought_llm_unavailable_falls_back_to_inbox(tmp_brain: Path, monkeypatch):
     schema.ensure_brain_initialized()
     monkeypatch.setattr(
@@ -313,6 +337,7 @@ def test_add_thought_llm_unavailable_falls_back_to_inbox(tmp_brain: Path, monkey
     result = add_thought("some thought")
     assert result.class_path is None
     assert result.warning == "LLM unavailable: all LLM candidates failed after 6 attempts"
+    assert result.rationale is None
     assert list((tmp_brain / "inbox").glob("*.md")) == [result.path]
 
     fm, body = read_note(result.path)

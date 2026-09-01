@@ -4,11 +4,13 @@ import json
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import Mock
 
 from typer.testing import CliRunner
 
 from pal.agent.prompts import IngestDecision
 from pal.cli.main import app
+from pal.engine.triage import Route
 from pal.storage.files import read_note
 
 
@@ -136,9 +138,9 @@ def test_add_normalizes_into_path(tmp_brain: Path):
 # ---------- CLI: add --dry-run / --why ----------
 
 
-def _fake_complete(decision: IngestDecision):
-    def _fake(messages: list[dict], **opts) -> IngestDecision:
-        return decision
+def _fake_classify(outcome):
+    def _fake(text: str):
+        return outcome
 
     return _fake
 
@@ -147,8 +149,8 @@ def test_add_dry_run_writes_nothing(tmp_brain: Path, monkeypatch):
     runner.invoke(app, ["init"])
     commits_before = len(_git(["log", "--oneline"], cwd=tmp_brain).strip().splitlines())
     monkeypatch.setattr(
-        "pal.cli.main.complete",
-        _fake_complete(
+        "pal.cli.main.classify_thought",
+        _fake_classify(
             IngestDecision(
                 class_path="marketing/cold-email",
                 slug="cold-email",
@@ -171,8 +173,8 @@ def test_add_dry_run_writes_nothing(tmp_brain: Path, monkeypatch):
 def test_add_dry_run_prints_decision_with_title(tmp_brain: Path, monkeypatch):
     runner.invoke(app, ["init"])
     monkeypatch.setattr(
-        "pal.cli.main.complete",
-        _fake_complete(
+        "pal.cli.main.classify_thought",
+        _fake_classify(
             IngestDecision(
                 class_path="marketing/cold-email",
                 slug="cold-email",
@@ -194,16 +196,28 @@ def test_add_dry_run_prints_decision_with_title(tmp_brain: Path, monkeypatch):
 def test_add_dry_run_into_performs_zero_llm_calls(tmp_brain: Path, monkeypatch):
     runner.invoke(app, ["init"])
 
-    def _boom(messages: list[dict], **opts):
-        raise AssertionError("LLM called")
+    def _boom(text: str):
+        raise AssertionError("classification called")
 
-    monkeypatch.setattr("pal.cli.main.complete", _boom)
+    monkeypatch.setattr("pal.cli.main.classify_thought", _boom)
     result = runner.invoke(
         app, ["add", "--dry-run", "thought", "--into", "experiments/cli"]
     )
     assert result.exit_code == 0, result.output
     assert "[dry-run] -> experiments/cli: thought" in result.output
     assert list((tmp_brain / "inbox").glob("*.md")) == []
+
+
+def test_add_dry_run_link_prints_reading_list_route(tmp_brain: Path, monkeypatch):
+    runner.invoke(app, ["init"])
+    monkeypatch.setattr(
+        "pal.cli.main.classify_thought",
+        _fake_classify(Route(kind="link", url="https://example.com/article.")),
+    )
+    result = runner.invoke(app, ["add", "--dry-run", "https://example.com/article."])
+    assert result.exit_code == 0, result.output
+    assert "[dry-run] -> reading-list: article" in result.output
+    assert list((tmp_brain / "reading-list").glob("*.md")) == []
 
 
 def test_add_why_prints_rationale(tmp_brain: Path, monkeypatch):
@@ -215,13 +229,14 @@ def test_add_why_prints_rationale(tmp_brain: Path, monkeypatch):
         body="b",
         rationale="fits the existing class",
     )
-    monkeypatch.setattr("pal.cli.main.complete", _fake_complete(decision))
-    monkeypatch.setattr("pal.engine.ingest.complete", _fake_complete(decision))
+    mock_complete = Mock(return_value=decision)
+    monkeypatch.setattr("pal.engine.ingest.complete", mock_complete)
 
     result = runner.invoke(app, ["add", "--why", "cold email subject lines"])
     assert result.exit_code == 0, result.output
     assert "] -> marketing/cold-email: Decision Title" in result.output
     assert "rationale: fits the existing class" in result.output
+    assert mock_complete.call_count == 1
 
     today = datetime.now(timezone.utc)
     raw_dir = tmp_brain / "raw" / f"{today.year:04d}" / f"{today.month:02d}" / f"{today.day:02d}"

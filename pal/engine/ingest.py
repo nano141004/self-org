@@ -13,7 +13,7 @@ from pal.engine.errors import (
     EmptyThoughtError,
     NotImplementedPhaseError,
 )
-from pal.engine.triage import route
+from pal.engine.triage import Route, route
 from pal.storage import git, schema
 from pal.storage.files import write_note
 from pal.storage.ids import new_id
@@ -42,7 +42,7 @@ def _derive_slug(text: str) -> str:
     return s or "untitled"
 
 
-def _derive_title(text: str) -> str:
+def derive_title(text: str) -> str:
     boundaries = [i for i in (text.find("."), text.find("\n")) if i != -1]
     end = min(boundaries) if boundaries else len(text)
     return text[:end].strip()[:TITLE_MAX]
@@ -52,7 +52,7 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _clean_url(url: str) -> str:
+def clean_url(url: str) -> str:
     """Strip trailing punctuation (`.,;:!?` and closing brackets/quotes) from a URL.
 
     The triage router's non-space regex match keeps trailing punctuation like
@@ -66,7 +66,7 @@ def _clean_url(url: str) -> str:
         url = cleaned
 
 
-def _derive_link_title(url: str) -> str:
+def derive_link_title(url: str) -> str:
     """Title = last URL path segment, percent-decoded and capped at 100 chars."""
     path = urlsplit(url).path.rstrip("/")
     segment = path.rsplit("/", 1)[-1]
@@ -87,6 +87,33 @@ class IngestResult:
     path: Path
     class_path: str | None
     warning: str | None = None
+    rationale: str | None = None
+
+
+def classify_thought(text: str) -> Route | IngestDecision:
+    """Route and classify one thought without writing anything.
+
+    Link captures return a `Route` (kind="link"); everything else returns the
+    LLM's `IngestDecision`. Same input guards as `add_thought` (empty text →
+    `EmptyThoughtError`, uninitialized brain → `BrainNotInitializedError`);
+    any LLM-layer exception (incl. `LLMUnavailableError`) propagates so the
+    caller decides the fallback (ingest → inbox/, dry-run → preview).
+    """
+    text = text.strip()
+    if not text:
+        raise EmptyThoughtError("refusing to ingest empty text")
+
+    if not (schema.is_initialized() and git.is_repo()):
+        raise BrainNotInitializedError("brain not initialized — run 'pal init' first")
+
+    routed = route(text)
+    if routed is not None and routed.kind == "link":
+        return routed
+
+    schema_md = _read_maybe_missing(schema_path())
+    index_md = _read_maybe_missing(index_path())
+    messages = build_classification_prompt(text, schema_md, index_md)
+    return complete(messages, response_model=IngestDecision)
 
 
 def _store_fleeting(
@@ -96,6 +123,7 @@ def _store_fleeting(
     class_path: str | None,
     body: str,
     llm_error: str | None = None,
+    rationale: str | None = None,
 ) -> IngestResult:
     """Write a fleeting note, append INDEX + LOG, commit; returns where it landed."""
     note_id = new_id()
@@ -126,7 +154,12 @@ def _store_fleeting(
 
     warning = f"LLM unavailable: {llm_error}" if llm_error is not None else None
     return IngestResult(
-        id=note_id, title=title, path=path, class_path=class_path, warning=warning
+        id=note_id,
+        title=title,
+        path=path,
+        class_path=class_path,
+        warning=warning,
+        rationale=rationale,
     )
 
 
@@ -135,9 +168,9 @@ def add_link_note(url: str, body_text: str | None = None) -> IngestResult:
     if not (schema.is_initialized() and git.is_repo()):
         raise BrainNotInitializedError("brain not initialized — run 'pal init' first")
 
-    url = _clean_url(url)
+    url = clean_url(url)
     note_id = new_id()
-    title = _derive_link_title(url)
+    title = derive_link_title(url)
     slug = _derive_slug(title)
     path = reading_list_path_for(note_id, slug)
 
@@ -174,9 +207,10 @@ def add_thought(text: str, into: str | None = None) -> IngestResult:
     """Triage and store one thought; returns where it landed.
 
     `into` bypasses routing and the LLM entirely. URLs route deterministically
-    to a minimal reading-list note. Everything else is classified by the LLM;
-    on any LLM failure the thought still lands in inbox/ with a warning — a
-    thought is never dropped.
+    to a minimal reading-list note. Everything else is classified by the LLM
+    (via `classify_thought`); on any LLM failure the thought still lands in
+    inbox/ with a warning — a thought is never dropped. The decision's
+    `rationale` is carried back on `IngestResult` for `pal add --why`.
     """
     text = text.strip()
     if not text:
@@ -187,33 +221,28 @@ def add_thought(text: str, into: str | None = None) -> IngestResult:
 
     if into:
         return _store_fleeting(
-            title=_derive_title(text) or "untitled",
+            title=derive_title(text) or "untitled",
             slug=_derive_slug(text),
             class_path=into.strip().strip("/"),
             body=text,
         )
 
-    routed = route(text)
-    if routed is not None and routed.kind == "link":
-        rest = text.replace(routed.url, "", 1).strip()
-        return add_link_note(routed.url, body_text=rest or None)
-
-    schema_md = _read_maybe_missing(schema_path())
-    index_md = _read_maybe_missing(index_path())
-    messages = build_classification_prompt(text, schema_md, index_md)
     try:
-        decision = complete(messages, response_model=IngestDecision)
+        outcome = classify_thought(text)
     except Exception as exc:
         return _store_fleeting(
-            title=_derive_title(text) or "untitled",
+            title=derive_title(text) or "untitled",
             slug=_derive_slug(text),
             class_path=None,
             body=text,
             llm_error=str(exc),
         )
 
-    if not isinstance(decision, IngestDecision):
-        decision = IngestDecision()
+    if isinstance(outcome, Route):
+        rest = text.replace(outcome.url, "", 1).strip()
+        return add_link_note(outcome.url, body_text=rest or None)
+
+    decision = outcome if isinstance(outcome, IngestDecision) else IngestDecision()
 
     raw_class = (decision.class_path or "").strip().strip("/")
     class_path = raw_class or None
@@ -221,9 +250,14 @@ def add_thought(text: str, into: str | None = None) -> IngestResult:
     raw_slug = (decision.slug or "").strip()
     slug = _derive_slug(raw_slug or title)
     body = (decision.body or "").strip() or text
+    rationale = (decision.rationale or "").strip() or None
 
     return _store_fleeting(
-        title=title, slug=slug, class_path=class_path, body=body
+        title=title,
+        slug=slug,
+        class_path=class_path,
+        body=body,
+        rationale=rationale,
     )
 
 
