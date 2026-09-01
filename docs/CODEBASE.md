@@ -56,6 +56,10 @@ The engine is deliberately split from the interfaces:
 is the single source of truth; swap the CLI for a GUI and nothing in the
 engine changes.
 
+**`pal/agent/` is the LLM layer** (Phase 2a): cross-cutting infrastructure
+imported by the engine for classification. It never imports `engine`, `mcp`,
+or `cli` — it only reads `pal/config.py` and talks to litellm.
+
 ## 3. Repo layout
 
 ```
@@ -63,6 +67,9 @@ self-org/
 ├── pal/                        # the Python package (the code)
 │   ├── __init__.py             # __version__
 │   ├── config.py               # settings: BRAIN_DIR + LLM model/key env
+│   ├── agent/                  # LLM abstraction — imported by engine (2a)
+│   │   ├── __init__.py
+│   │   └── llm.py              # complete() — retries, key×model rotation
 │   ├── engine/                 # ALL business logic — plain functions
 │   │   ├── __init__.py
 │   │   ├── errors.py           # typed exceptions used across the engine
@@ -80,9 +87,10 @@ self-org/
 │   │   └── server.py           # FastMCP stdio server, 2 tools
 │   └── cli/
 │       └── main.py             # Typer CLI: init / add / ask / lint / reindex
-├── tests/                      # pytest suite (78 tests)
+├── tests/                      # pytest suite (85 tests)
 │   ├── conftest.py             # tmp_brain fixture (isolated BRAIN_DIR per test)
 │   ├── test_config.py          # settings: defaults + env splitting
+│   ├── test_llm.py             # LLM wrapper: rotation, budgets, parsing
 │   ├── test_{ids,paths,schema,files,git}.py    # storage tests (ported)
 │   ├── test_engine_ingest.py   # add_thought behavior
 │   ├── test_engine_stubs.py    # phase stubs raise the right error
@@ -123,6 +131,32 @@ Brain data (`~/brain/`) never lives inside this repo.
   drop empty entries), since pydantic-settings would otherwise try to
   JSON-decode env values.
 - `reset_settings_cache()` — used by tests between env changes.
+
+### `pal/agent/llm.py` — the LLM wrapper (Phase 2a)
+
+Cross-cutting infrastructure: the engine's only way to call an LLM. Reads
+model lists + keys from `get_settings()` only; never imports engine/mcp/cli.
+
+- `LLMUnavailableError(Exception)` — standalone (agent can't subclass
+  `PalError`); message `all LLM candidates failed after <n> attempts`.
+- `complete(messages, *, response_model=None, **opts) -> str | BaseModel`:
+  - Candidates = `[(key, model) for key in keys for model in (primary,
+    *fallbacks)]` — key-major rotation: exhaust key 1 across all models, then
+    key 2, ...
+  - Per candidate: up to `MAX_ATTEMPTS_PER_CANDIDATE` (3) attempts; on any
+    exception or parse failure, jittered backoff 1s → 2s (capped,
+    `_backoff_delay`) then retry; after 3 attempts rotate to the next
+    candidate.
+  - Global budget: hard stop at `MAX_TOTAL_ATTEMPTS` (6) total attempts or
+    `WALL_CLOCK_LIMIT_S` (15 s) of wall clock (`time.monotonic`), whichever
+    first. Exhausted budget or candidates → `LLMUnavailableError`.
+  - `response_model` given → `response_format={"type": "json_object"}` is
+    passed; if the call raises, it is retried once without that kwarg. The
+    completion text is parsed with `model_validate_json`; a parse failure
+    counts as a candidate error (rotate onward).
+  - `api_key`/`model` per call come from the candidate pair; extra `opts`
+    pass through to litellm. Empty key list → fail fast with
+    `LLMUnavailableError` (0 attempts).
 
 ### `pal/storage/` — the I/O layer (ported as-is from the old `brain`)
 
@@ -271,7 +305,7 @@ or move files freely because cross-references are by `id`, never by path.
 ## 8. Tests — how to run and what they guard
 
 ```powershell
-.venv\Scripts\python -m pytest            # full suite (78 tests)
+.venv\Scripts\python -m pytest            # full suite (85 tests)
 .venv\Scripts\python -m pytest tests\test_engine_imports.py   # dependency rule
 .venv\Scripts\python -m pytest --cov=pal.storage --cov-report=term-missing
 ```
