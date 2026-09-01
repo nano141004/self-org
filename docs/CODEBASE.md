@@ -386,15 +386,29 @@ No behavior was changed in the rename; tests were kept passing in substance.
 - `init` — scaffolds the brain (idempotent)
 - `add "<text>" [--into <class>] [--dry-run] [--why]` — calls `add_thought`;
   maps engine errors to exit codes (empty text → 2, uninitialized → 1); prints
-  `[{id}] -> {where}: {title}`. `--dry-run` prints the decision
-  (`[dry-run] -> …`) and writes nothing; with `--into` it is deterministic
-  (zero LLM calls), otherwise it calls the engine's `classify_thought` seam
-  (route + classification, no writes). Dry-run maps the same engine errors to
-  the same exit codes; only genuine LLM-layer failures (`LLMUnavailableError`)
-  show `[warn] …` + an `inbox` preview with exit 0. `--why` appends the stored
-  decision's rationale (`IngestResult.rationale`) — no extra LLM call; dry-run
-  shows the seam's rationale directly. `IngestResult.warning` is echoed as
-  `[warn] <warning>` on stderr with exit code 0.
+  `[{id}] -> {where}: {title}`. A URL result (or any non-`created` action) is
+  printed by the shared `_echo_link_result` printer instead. `--dry-run` prints
+  the decision (`[dry-run] -> …`) and writes nothing; with `--into` it is
+  deterministic (zero LLM calls), otherwise it calls the engine's
+  `classify_thought` seam (route + classification, no writes). Dry-run maps the
+  same engine errors to the same exit codes; only genuine LLM-layer failures
+  (`LLMUnavailableError`) show `[warn] …` + an `inbox` preview with exit 0.
+  `--why` appends the stored decision's rationale (`IngestResult.rationale`) —
+  no extra LLM call; dry-run shows the seam's rationale directly.
+  `IngestResult.warning` is echoed as `[warn] <warning>` on stderr with exit
+  code 0.
+- `add-link "<url>" [--dry-run]` — explicit alias for `pal add <url>`, calls
+  `add_link` directly (no triage); empty url → exit 2. `--dry-run` prints
+  `[dry-run] -> reading-list: <title>` without fetching or writing. Otherwise
+  the result is printed by `_echo_link_result`: created → `[{id}] ->
+  reading-list: <title>` plus a `summary:` line when the note has one;
+  upgraded → `upgraded: <path>`; skipped-duplicate → `already captured: <path>`
+  (with a `[warn] …` on stderr when the upgrade attempt failed). Warnings go
+  to stderr; exit code stays 0.
+- `_echo_link_result(result)` — shared printer for reading-list outcomes:
+  dispatches on `IngestResult.action` (`created` | `skipped-duplicate` |
+  `upgraded`), reads the note's `summary` frontmatter via `_summary_of`, and
+  echoes `[warn] …` on stderr when `result.warning` is set.
 - `ask "<question>"` / `lint` — call engine, catch
   `NotImplementedPhaseError`, print "coming in Phase N"
 - `reindex` — prints "coming in Phase 5" (no engine seam yet)
@@ -478,7 +492,7 @@ or move files freely because cross-references are by `id`, never by path.
 ## 8. Tests — how to run and what they guard
 
 ```powershell
-.venv\Scripts\python -m pytest            # full suite (146 tests; 3 live skipped)
+.venv\Scripts\python -m pytest            # full suite (150 tests; 3 live skipped)
 .venv\Scripts\python -m pytest -m live    # live LLM tests (needs GEMINI_API_KEY)
 .venv\Scripts\python -m pytest tests\test_engine_imports.py   # dependency rule (engine + agent)
 .venv\Scripts\python -m pytest --cov=pal.storage --cov-report=term-missing
@@ -500,6 +514,7 @@ restart's promise is that storage behavior did not change.
 .venv\Scripts\pal add "some thought"               # → inbox/
 .venv\Scripts\pal add "x" --into marketing/cold    # → raw/…/ with class
 .venv\Scripts\pal add "x" --dry-run --why          # print decision only, nothing written
+.venv\Scripts\pal add-link "https://example.com/a"  # fetch + summarize → reading-list/
 .venv\Scripts\pal-mcp                              # serve MCP over stdio
 ```
 

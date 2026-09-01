@@ -10,6 +10,7 @@ from pal.engine.errors import (
 )
 from pal.engine.ingest import (
     TITLE_MAX,
+    add_link as engine_add_link,
     add_thought,
     classify_thought,
     clean_url,
@@ -49,6 +50,29 @@ def _dry_run(text: str, into: str | None, why: bool) -> None:
     typer.echo(f"[dry-run] -> {where}: {title}")
     if why and outcome.rationale:
         typer.echo(f"rationale: {outcome.rationale}")
+
+
+def _echo_link_result(result) -> None:
+    where = result.class_path or "inbox"
+    if result.action == "skipped-duplicate" and not result.warning:
+        typer.echo(f"already captured: {result.path.relative_to(brain_dir()).as_posix()}")
+        return
+    if result.action == "upgraded":
+        typer.echo(f"upgraded: {result.path.relative_to(brain_dir()).as_posix()}")
+    else:
+        typer.echo(f"[{result.id}] -> {where}: {result.title}")
+    if result.class_path == "reading-list" and result.title:
+        summary = _summary_of(result.path)
+        if summary:
+            typer.echo(f"summary: {summary}")
+    if result.warning:
+        typer.echo(f"[warn] {result.warning}", err=True)
+
+
+def _summary_of(path) -> str | None:
+    from pal.storage.files import read_note
+    fm, _ = read_note(path)
+    return fm.get("summary")
 
 
 @app.command()
@@ -91,12 +115,38 @@ def add(
     except BrainNotInitializedError:
         typer.echo("Brain not initialized. Run: pal init", err=True)
         raise typer.Exit(code=1)
+    if result.class_path == "reading-list" or result.action != "created":
+        _echo_link_result(result)
+        return
     where = result.class_path or "inbox"
     typer.echo(f"[{result.id}] -> {where}: {result.title}")
     if why and result.rationale:
         typer.echo(f"rationale: {result.rationale}")
     if result.warning:
         typer.echo(f"[warn] {result.warning}", err=True)
+
+
+@app.command(name="add-link")
+def add_link_cmd(
+    url: str = typer.Argument(..., help="The URL to capture into the reading list."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print the decision without fetching or writing."
+    ),
+) -> None:
+    """Capture one URL into the reading list (explicit form of pal add <url>)."""
+    if not url.strip():
+        typer.echo("Refusing to ingest empty url.", err=True)
+        raise typer.Exit(code=2)
+    if dry_run:
+        title = derive_link_title(clean_url(url))
+        typer.echo(f"[dry-run] -> reading-list: {title}")
+        return
+    try:
+        result = engine_add_link(url)
+    except BrainNotInitializedError:
+        typer.echo("Brain not initialized. Run: pal init", err=True)
+        raise typer.Exit(code=1)
+    _echo_link_result(result)
 
 
 @app.command()

@@ -9,13 +9,17 @@ from unittest.mock import Mock
 from typer.testing import CliRunner
 
 from pal.agent.llm import LLMUnavailableError
-from pal.agent.prompts import IngestDecision
+from pal.agent.prompts import IngestDecision, LinkDecision
 from pal.cli.main import app
+from pal.engine.fetch import FetchError, FetchedPage
 from pal.engine.triage import Route
 from pal.storage.files import read_note
 
 
 runner = CliRunner()
+
+PAGE = FetchedPage(url="https://e.com/a", text="Body text. " * 50, via="trafilatura")
+DECISION = LinkDecision(title="A Great Article", summary="Short summary.")
 
 
 def _git(args: list[str], cwd: Path) -> str:
@@ -279,6 +283,60 @@ def test_add_llm_failure_warns_on_stderr_lands_in_inbox(tmp_brain: Path, monkeyp
     assert result.exit_code == 0, result.output
     assert "[warn] LLM classification failed: boom" in result.stderr
     assert len(list((tmp_brain / "inbox").glob("*.md"))) == 1
+
+
+# ---------- CLI: add-link ----------
+
+
+def test_cli_add_url_full_flow(tmp_brain, mocker):
+    from pal.storage import schema
+    schema.ensure_brain_initialized()
+    mocker.patch("pal.engine.ingest.fetch_article", return_value=PAGE)
+    mocker.patch("pal.engine.ingest.complete", return_value=DECISION)
+    result = runner.invoke(app, ["add", "https://e.com/a worth a read"])
+    assert result.exit_code == 0
+    assert "reading-list" in result.output
+    assert "Short summary." in result.output
+
+
+def test_cli_add_link_alias(tmp_brain, mocker):
+    from pal.storage import schema
+    schema.ensure_brain_initialized()
+    mocker.patch("pal.engine.ingest.fetch_article", return_value=PAGE)
+    mocker.patch("pal.engine.ingest.complete", return_value=DECISION)
+    result = runner.invoke(app, ["add-link", "https://e.com/a"])
+    assert result.exit_code == 0
+    assert "reading-list" in result.output
+
+
+def test_cli_add_link_duplicate_and_upgrade_outputs(tmp_brain, mocker):
+    from pal.storage import schema
+    schema.ensure_brain_initialized()
+    mocker.patch("pal.engine.ingest.fetch_article", return_value=PAGE)
+    mocker.patch("pal.engine.ingest.complete", return_value=DECISION)
+    assert runner.invoke(app, ["add-link", "https://e.com/a"]).exit_code == 0
+    dup = runner.invoke(app, ["add-link", "https://e.com/a"])
+    assert "already captured" in dup.output
+    # a second URL whose fetch fails: minimal note, [warn], exit 0
+    mocker.patch("pal.engine.ingest.fetch_article",
+                 side_effect=FetchError("https://e.com/c: HTTP 404"))
+    failed = runner.invoke(app, ["add-link", "https://e.com/c"])
+    assert failed.exit_code == 0
+    assert "[warn]" in failed.output
+    # re-add after the fetch mock is fixed → upgraded output
+    mocker.patch("pal.engine.ingest.fetch_article", return_value=PAGE)
+    up = runner.invoke(app, ["add-link", "https://e.com/c"])
+    assert "upgraded" in up.output
+
+
+def test_cli_add_link_dry_run_does_not_fetch(tmp_brain, mocker):
+    from pal.storage import schema
+    schema.ensure_brain_initialized()
+    fetch_spy = mocker.patch("pal.engine.ingest.fetch_article")
+    result = runner.invoke(app, ["add-link", "https://e.com/a", "--dry-run"])
+    assert result.exit_code == 0
+    assert "[dry-run] -> reading-list" in result.output
+    fetch_spy.assert_not_called()
 
 
 # ---------- CLI: phase placeholders ----------
