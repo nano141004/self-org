@@ -123,16 +123,16 @@ Brain data (`~/brain/`) never lives inside this repo.
 - `brain_dir` — `BRAIN_DIR`, expands `~`, default `~/brain/`.
 - LLM settings (Phase 2a, read by `pal/agent/llm.py`):
   - `llm_primary_model` — `PAL_LLM_PRIMARY_MODEL`, default
-    `gemini/gemini-2.5-flash`
+    `gemini/gemini-3.5-flash-lite`
   - `llm_fallback_models` — `PAL_LLM_FALLBACK_MODELS`, comma-separated,
-    default `["gemini/gemini-2.5-flash-lite", "gemini/gemini-2.0-flash"]`
+    default `["gemini/gemini-3.7-flash", "gemini/gemini-3.6-flash"]`
   - `llm_api_keys` — `GEMINI_API_KEYS`, comma-separated; falls back to
     `GEMINI_API_KEY` (single key) when empty, via a hidden
     `gemini_api_key` field (`exclude=True`) and a
     `model_validator(mode="after")` — so the fallback works for both
     os-env and `.env`-file values
   - `llm_embedding_model` — `PAL_LLM_EMBEDDING_MODEL`, default
-    `gemini/text-embedding-004` (set but unused until Phase 5)
+    `gemini-embedding-2` (set but unused until Phase 5)
 - List fields use `NoDecode` + comma-splitting validators (trim whitespace,
   drop empty entries), since pydantic-settings would otherwise try to
   JSON-decode env values.

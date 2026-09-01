@@ -18,13 +18,13 @@ class Settings(BaseSettings):
     brain_dir: Path = Path("~/brain")
 
     llm_primary_model: str = Field(
-        "gemini/gemini-2.5-flash",
+        "gemini/gemini-3.5-flash-lite",
         validation_alias="PAL_LLM_PRIMARY_MODEL",
     )
     llm_fallback_models: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
-            "gemini/gemini-2.5-flash-lite",
-            "gemini/gemini-2.0-flash",
+            "gemini/gemini-3.7-flash",
+            "gemini/gemini-3.6-flash",
         ],
         validation_alias="PAL_LLM_FALLBACK_MODELS",
     )
@@ -38,7 +38,7 @@ class Settings(BaseSettings):
         exclude=True,
     )
     llm_embedding_model: str = Field(
-        "gemini/text-embedding-004",
+        "gemini-embedding-2",
         validation_alias="PAL_LLM_EMBEDDING_MODEL",
     )
 

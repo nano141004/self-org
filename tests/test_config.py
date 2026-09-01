@@ -20,13 +20,13 @@ def test_defaults_when_no_llm_env(monkeypatch):
     for env in LLM_ENVS:
         monkeypatch.delenv(env, raising=False)
     s = _fresh_settings(monkeypatch)
-    assert s.llm_primary_model == "gemini/gemini-2.5-flash"
+    assert s.llm_primary_model == "gemini/gemini-3.5-flash-lite"
     assert s.llm_fallback_models == [
-        "gemini/gemini-2.5-flash-lite",
-        "gemini/gemini-2.0-flash",
+        "gemini/gemini-3.7-flash",
+        "gemini/gemini-3.6-flash",
     ]
     assert s.llm_api_keys == []
-    assert s.llm_embedding_model == "gemini/text-embedding-004"
+    assert s.llm_embedding_model == "gemini-embedding-2"
 
 
 def test_fallback_models_splits_comma_separated(monkeypatch):
