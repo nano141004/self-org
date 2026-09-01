@@ -7,6 +7,26 @@ import pytest
 from pal.config import reset_settings_cache
 
 
+@pytest.fixture(autouse=True)
+def _isolate_llm_keys(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    """Keep the suite hermetic: no test ever hits a real LLM by accident.
+
+    Clears both key env vars (the hidden `gemini_api_key` fallback in
+    `pal/config.py` re-enables a key otherwise) so `complete()` fail-fasts with
+    an empty candidate list. `live`-marked tests are exempt — they need real
+    keys.
+    """
+    if request.node.get_closest_marker("live"):
+        return
+    monkeypatch.setenv("GEMINI_API_KEYS", "")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    reset_settings_cache()
+    yield
+    reset_settings_cache()
+
+
 @pytest.fixture
 def tmp_brain(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A clean brain directory pointed at by BRAIN_DIR for the duration of the test."""

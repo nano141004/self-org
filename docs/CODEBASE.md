@@ -91,7 +91,7 @@ self-org/
 │   └── cli/
 │       └── main.py             # Typer CLI: init / add / ask / lint / reindex
 ├── tests/                      # pytest suite (121 tests; 3 live)
-│   ├── conftest.py             # tmp_brain fixture (isolated BRAIN_DIR per test)
+│   ├── conftest.py             # fixtures: isolated BRAIN_DIR + cleared LLM keys
 │   ├── test_config.py          # settings: defaults + env splitting
 │   ├── test_llm.py             # LLM wrapper: rotation, budgets, parsing
 │   ├── test_prompts.py         # classification prompt + IngestDecision shape
@@ -388,8 +388,10 @@ or move files freely because cross-references are by `id`, never by path.
 .venv\Scripts\python -m pytest --cov=pal.storage --cov-report=term-missing
 ```
 
-`tests/conftest.py` provides `tmp_brain`: every test gets a throwaway
-`BRAIN_DIR` plus git identity env vars, so tests never touch a real brain.
+`tests/conftest.py` provides `tmp_brain` (throwaway `BRAIN_DIR` + git identity
+env vars) and an autouse fixture that clears `GEMINI_API_KEYS`/`GEMINI_API_KEY`
+so no test can accidentally hit a real LLM (live-marked tests are exempt), so
+tests never touch a real brain or spend real API quota.
 
 Storage tests were ported from the old `brain` project unchanged — the
 restart's promise is that storage behavior did not change.
