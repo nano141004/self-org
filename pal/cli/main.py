@@ -54,10 +54,9 @@ def _dry_run(text: str, into: str | None, why: bool) -> None:
 
 def _echo_link_result(result) -> None:
     where = result.class_path or "inbox"
-    if result.action == "skipped-duplicate" and not result.warning:
+    if result.action == "skipped-duplicate":
         typer.echo(f"already captured: {result.path.relative_to(brain_dir()).as_posix()}")
-        return
-    if result.action == "upgraded":
+    elif result.action == "upgraded":
         typer.echo(f"upgraded: {result.path.relative_to(brain_dir()).as_posix()}")
     else:
         typer.echo(f"[{result.id}] -> {where}: {result.title}")
