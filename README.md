@@ -12,13 +12,16 @@ Three operations:
 
 ## Status
 
-**Restructuring.** The repo is being rebuilt from the old `brain` CLI into the
-`pal` engine (MCP-native, engine-first API). See `docs/PRD.md` for the plan.
+**Phase 1 + 2a shipped.** The repo is now the `pal` engine (MCP-native,
+engine-first API); the old `brain` CLI is gone. `pal add "<text>"` triages
+captures — URLs route to `reading-list/`, everything else is classified by a
+free-tier Gemini chain with a never-drop inbox fallback. See `docs/PRD.md` for
+the plan.
 
 | Phase | Scope                                       | Status     |
 |-------|---------------------------------------------|------------|
-| 1     | Restart — `pal/` package, storage ported, engine + MCP + CLI | spec'd |
-| 2a    | Text triage — URL-only router + LiteLLM classification | spec'd |
+| 1     | Restart — `pal/` package, storage ported, engine + MCP + CLI | done (shipped) |
+| 2a    | Text triage — URL-only router + LiteLLM classification | done (shipped) |
 | 2b    | Link ingestion — fetch, summarize, reading-list | spec'd |
 | 3     | `pal lint` — reorganize, fold, contradictions | sketched   |
 | 4     | `pal ask` — agentic retrieval + synthesis    | sketched   |
@@ -27,9 +30,6 @@ Three operations:
 | 7     | Standalone app — GUI/desktop/web on the engine | future   |
 
 ## Quick start
-
-> **Target state.** The `pal` package lands with Phase 1 — until then the repo
-> still installs the old `brain` CLI. Commands below are what Phase 1 delivers.
 
 Requires Python 3.11+ and `git` on PATH.
 
