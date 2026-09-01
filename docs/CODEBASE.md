@@ -77,6 +77,7 @@ self-org/
 │   │   ├── errors.py           # typed exceptions used across the engine
 │   │   ├── ingest.py           # add_thought() — capture one thought
 │   │   ├── triage.py           # route() — URL-only router (Phase 2a)
+│   │   ├── fetch.py            # fetch_article() — httpx+trafilatura, LLM fallback (2b)
 │   │   ├── reading_list.py     # list_items() / set_status() — link queue
 │   │   ├── query.py            # query() / assemble_context() — stubs (Phase 4)
 │   │   └── lint.py             # run_lint() — stub (Phase 3)
@@ -90,7 +91,7 @@ self-org/
 │   │   └── server.py           # FastMCP stdio server, 2 tools
 │   └── cli/
 │       └── main.py             # Typer CLI: init / add / ask / lint / reindex
-├── tests/                      # pytest suite (121 tests; 3 live)
+├── tests/                      # pytest suite (129 tests; 3 live)
 │   ├── conftest.py             # fixtures: isolated BRAIN_DIR + cleared LLM keys
 │   ├── test_config.py          # settings: defaults + env splitting
 │   ├── test_llm.py             # LLM wrapper: rotation, budgets, parsing
@@ -264,6 +265,28 @@ No behavior was changed in the rename; tests were kept passing in substance.
   - `add_link(url, ...)` — stub: `NotImplementedPhaseError("add_link", "2b")`
   - `derive_title` / `clean_url` / `derive_link_title` — public derivations
     (tested); `_derive_slug` stays private
+- **`fetch.py`** — network I/O + article extraction for link ingestion (Phase 2b):
+  - Constants: `MAX_BODY_CHARS = 50_000` (returned text is capped at this),
+    `THIN_TEXT_CHARS = 200`, `LLM_EXTRACT_MIN_CHARS = 100`,
+    `FETCH_TIMEOUT_S = 15.0`, `MAX_DOWNLOAD_BYTES = 2_000_000` (2 MB stream cap)
+  - `FetchError(PalError)` — any fetch/extract failure; message includes the
+    url + reason. The URL stays the recoverable artifact.
+  - `FetchedPage` — frozen dataclass `(url, text, via)`; `via` is
+    `"trafilatura"` or `"llm"`.
+  - `fetch_article(url) -> FetchedPage` — the flow:
+    1. httpx GET (15 s timeout, 2 MB cap, browser UA, follow redirects) via
+       `_client()`; non-200 or non-`text/html` content-type, or any network
+       exception → `FetchError`
+    2. trafilatura extract (markdown, no comments, with tables); parse
+       exceptions swallowed → `""`
+    3. stripped text ≥ `THIN_TEXT_CHARS` → `via="trafilatura"`
+    4. else `pal.agent.fetch.extract_article(url)` (LLM URL-context pass) →
+       stripped ≥ `LLM_EXTRACT_MIN_CHARS` → `via="llm"`; LLM-layer exception →
+       `FetchError`; still too thin → `FetchError`
+    5. returned text already capped at `MAX_BODY_CHARS`
+  - `_client()` — module-level httpx.Client factory (a monkeypatchable seam for
+    tests). The LLM seam lives in `pal/agent/fetch.py` (ships in Task 2; a temp
+    stub keeps tests isolated until then).
 - **`triage.py`** — deterministic URL-only router (Phase 2a):
   - `Route` — frozen dataclass `(kind, url)`; `kind` is `"link"`
   - `route(content) -> Route | None` — pure, no I/O, no LLM: strips content;
@@ -382,7 +405,7 @@ or move files freely because cross-references are by `id`, never by path.
 ## 8. Tests — how to run and what they guard
 
 ```powershell
-.venv\Scripts\python -m pytest            # full suite (121 tests; 3 live skipped)
+.venv\Scripts\python -m pytest            # full suite (129 tests; 3 live skipped)
 .venv\Scripts\python -m pytest -m live    # live LLM tests (needs GEMINI_API_KEY)
 .venv\Scripts\python -m pytest tests\test_engine_imports.py   # dependency rule (engine + agent)
 .venv\Scripts\python -m pytest --cov=pal.storage --cov-report=term-missing
