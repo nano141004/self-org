@@ -75,6 +75,7 @@ self-org/
 │   │   ├── __init__.py
 │   │   ├── errors.py           # typed exceptions used across the engine
 │   │   ├── ingest.py           # add_thought() — capture one thought
+│   │   ├── triage.py           # route() — URL-only router (Phase 2a)
 │   │   ├── reading_list.py     # list_items() / set_status() — link queue
 │   │   ├── query.py            # query() / assemble_context() — stubs (Phase 4)
 │   │   └── lint.py             # run_lint() — stub (Phase 3)
@@ -88,13 +89,14 @@ self-org/
 │   │   └── server.py           # FastMCP stdio server, 2 tools
 │   └── cli/
 │       └── main.py             # Typer CLI: init / add / ask / lint / reindex
-├── tests/                      # pytest suite (89 tests)
+├── tests/                      # pytest suite (94 tests)
 │   ├── conftest.py             # tmp_brain fixture (isolated BRAIN_DIR per test)
 │   ├── test_config.py          # settings: defaults + env splitting
 │   ├── test_llm.py             # LLM wrapper: rotation, budgets, parsing
 │   ├── test_prompts.py         # classification prompt + IngestDecision shape
 │   ├── test_{ids,paths,schema,files,git}.py    # storage tests (ported)
 │   ├── test_engine_ingest.py   # add_thought behavior
+│   ├── test_triage.py          # URL-only routing (route/Route)
 │   ├── test_engine_stubs.py    # phase stubs raise the right error
 │   ├── test_engine_imports.py  # THE dependency-rule guard
 │   ├── test_reading_list.py    # reading-list domain
@@ -231,6 +233,15 @@ No behavior was changed in the rename; tests were kept passing in substance.
     7. one git commit `ingest: <title>`
   - `add_link(url, ...)` — stub: `NotImplementedPhaseError("add_link", "2b")`
   - `_derive_slug` / `_derive_title` — private helpers (tested)
+- **`triage.py`** — deterministic URL-only router (Phase 2a):
+  - `Route` — frozen dataclass `(kind, url)`; `kind` is `"link"`
+  - `route(content) -> Route | None` — pure, no I/O, no LLM: strips content;
+    whole content is a single URL (`https?://\S+`) → link route; else the
+    first line contains a URL AND remaining content ≤200 chars → link route
+    with that URL; multi-URL → first URL wins (rest stays in the note body);
+    everything else → `None` (needs LLM). Schemeless `www.` links → `None`.
+    Consumed by `add_thought` in Phase 2a to short-circuit URLs into
+    reading-list notes without an LLM call.
 - **`reading_list.py`** — the link queue (minimal Phase 1 version):
   - `ReadingItem` — dataclass `(id, title, url, status, summary, date_added)`
   - `list_items(status=None, topic=None)` — reads `reading-list/*.md`
@@ -318,7 +329,8 @@ or move files freely because cross-references are by `id`, never by path.
 | `pal init` / `pal add [--into]` / `add_to_brain` / `get_reading_list` | working | Phase 1 |
 | `reading_list.list_items` / `set_status` | working (minimal) | Phase 1 |
 | `ingest.add_link` | stub | Phase 2b |
-| LLM classification / URL routing | — | Phase 2a |
+| URL-only routing (`triage.route`) | working (pure router) | Phase 2a |
+| LLM classification | — | Phase 2a |
 | `pal lint` / `run_lint` | stub | Phase 3 |
 | `pal ask` / `query` / `assemble_context` | stubs | Phase 4 |
 | `pal reindex` / `.index/` | placeholder | Phase 5 |
@@ -326,7 +338,7 @@ or move files freely because cross-references are by `id`, never by path.
 ## 8. Tests — how to run and what they guard
 
 ```powershell
-.venv\Scripts\python -m pytest            # full suite (89 tests)
+.venv\Scripts\python -m pytest            # full suite (94 tests)
 .venv\Scripts\python -m pytest tests\test_engine_imports.py   # dependency rule
 .venv\Scripts\python -m pytest --cov=pal.storage --cov-report=term-missing
 ```
