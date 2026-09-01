@@ -62,7 +62,7 @@ engine changes.
 self-org/
 ├── pal/                        # the Python package (the code)
 │   ├── __init__.py             # __version__
-│   ├── config.py               # brain dir resolution (BRAIN_DIR env)
+│   ├── config.py               # settings: BRAIN_DIR + LLM model/key env
 │   ├── engine/                 # ALL business logic — plain functions
 │   │   ├── __init__.py
 │   │   ├── errors.py           # typed exceptions used across the engine
@@ -80,8 +80,9 @@ self-org/
 │   │   └── server.py           # FastMCP stdio server, 2 tools
 │   └── cli/
 │       └── main.py             # Typer CLI: init / add / ask / lint / reindex
-├── tests/                      # pytest suite (73 tests)
+├── tests/                      # pytest suite (77 tests)
 │   ├── conftest.py             # tmp_brain fixture (isolated BRAIN_DIR per test)
+│   ├── test_config.py          # settings: defaults + env splitting
 │   ├── test_{ids,paths,schema,files,git}.py    # storage tests (ported)
 │   ├── test_engine_ingest.py   # add_thought behavior
 │   ├── test_engine_stubs.py    # phase stubs raise the right error
@@ -103,10 +104,22 @@ Brain data (`~/brain/`) never lives inside this repo.
 
 ### `pal/config.py` — configuration
 
-- `Settings` (pydantic-settings): reads `BRAIN_DIR` from env / `.env`, expands
-  `~`, default `~/brain/`.
-- `get_settings()` — cached singleton.
-- `reset_settings_cache()` — used by tests between `BRAIN_DIR` changes.
+- `Settings` (pydantic-settings): reads env / `.env` (see `.env.example`),
+  cached via `get_settings()`.
+- `brain_dir` — `BRAIN_DIR`, expands `~`, default `~/brain/`.
+- LLM settings (Phase 2a, read by `pal/agent/llm.py`):
+  - `llm_primary_model` — `PAL_LLM_PRIMARY_MODEL`, default
+    `gemini/gemini-2.5-flash`
+  - `llm_fallback_models` — `PAL_LLM_FALLBACK_MODELS`, comma-separated,
+    default `["gemini/gemini-2.5-flash-lite", "gemini/gemini-2.0-flash"]`
+  - `llm_api_keys` — `GEMINI_API_KEYS`, comma-separated; falls back to
+    `GEMINI_API_KEY` (single key) when empty
+  - `llm_embedding_model` — `PAL_LLM_EMBEDDING_MODEL`, default
+    `gemini/text-embedding-004` (set but unused until Phase 5)
+- List fields use `NoDecode` + comma-splitting validators (trim whitespace,
+  drop empty entries), since pydantic-settings would otherwise try to
+  JSON-decode env values.
+- `reset_settings_cache()` — used by tests between env changes.
 
 ### `pal/storage/` — the I/O layer (ported as-is from the old `brain`)
 
@@ -255,7 +268,7 @@ or move files freely because cross-references are by `id`, never by path.
 ## 8. Tests — how to run and what they guard
 
 ```powershell
-.venv\Scripts\python -m pytest            # full suite (73 tests)
+.venv\Scripts\python -m pytest            # full suite (77 tests)
 .venv\Scripts\python -m pytest tests\test_engine_imports.py   # dependency rule
 .venv\Scripts\python -m pytest --cov=pal.storage --cov-report=term-missing
 ```
@@ -276,7 +289,8 @@ restart's promise is that storage behavior did not change.
 .venv\Scripts\pal-mcp                              # serve MCP over stdio
 ```
 
-Set `BRAIN_DIR` (env or `.env`) to point the brain elsewhere.
+Set `BRAIN_DIR` (env or `.env`) to point the brain elsewhere. LLM settings
+(model names, API keys) also come from env / `.env` — see `.env.example`.
 
 ## 10. Where to learn more
 
