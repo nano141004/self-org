@@ -150,8 +150,9 @@ Dependency rule unchanged: `agent/` never imports `engine`, `mcp`, or `cli`
      `skipped-duplicate` | `upgraded`.
 - `add_thought`'s URL route now calls `add_link(url, note=rest)` instead of
   `add_link_note`.
-- `add_link_note` — unchanged; it is the minimal-note writer used by the
-  failure path.
+- `add_link_note` — format/behavior unchanged; gains an optional
+  `log_extra: dict | None = None` merged into its LOG payload, so the
+  fetch-failure path records `fetch_error` within the same single commit.
 
 ### `pal/engine/reading_list.py` (update)
 
