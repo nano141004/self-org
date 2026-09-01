@@ -89,13 +89,14 @@ self-org/
 │   │   └── server.py           # FastMCP stdio server, 2 tools
 │   └── cli/
 │       └── main.py             # Typer CLI: init / add / ask / lint / reindex
-├── tests/                      # pytest suite (94 tests)
+├── tests/                      # pytest suite (105 tests)
 │   ├── conftest.py             # tmp_brain fixture (isolated BRAIN_DIR per test)
 │   ├── test_config.py          # settings: defaults + env splitting
 │   ├── test_llm.py             # LLM wrapper: rotation, budgets, parsing
 │   ├── test_prompts.py         # classification prompt + IngestDecision shape
 │   ├── test_{ids,paths,schema,files,git}.py    # storage tests (ported)
-│   ├── test_engine_ingest.py   # add_thought behavior
+│   ├── test_engine_ingest.py   # add_thought classify pipeline + link notes
+│   ├── test_ingest_live.py     # live LLM classification (skipped by default)
 │   ├── test_triage.py          # URL-only routing (route/Route)
 │   ├── test_engine_stubs.py    # phase stubs raise the right error
 │   ├── test_engine_imports.py  # THE dependency-rule guard
@@ -220,19 +221,38 @@ No behavior was changed in the rename; tests were kept passing in substance.
     things that ship later; message `"{feature} is not implemented until
     Phase {phase}"`. The CLI catches it to print "coming in Phase N".
 - **`ingest.py`** — capture:
+  - `IngestResult` — frozen dataclass `(id, title, path, class_path,
+    warning=None)`; `warning` carries the LLM-failure message when a thought
+    had to fall back to `inbox/`
   - `add_thought(text, into=None) -> IngestResult` — the core op:
-    1. strip text; empty → `EmptyThoughtError`
-    2. brain initialized? else `BrainNotInitializedError`
-    3. derive title (first sentence/line, ≤100 chars) and slug (first 6
-       words, kebab-case, ≤60 chars)
-    4. `into` given → file under `raw/YYYY/MM/DD/` with `classified_into` set;
-       else `inbox/`
-    5. atomic write with frontmatter (`id`, `type: fleeting`, `title`,
-       `created`, `classified_into`, `sources`, `tags`)
-    6. append INDEX + LOG entries
-    7. one git commit `ingest: <title>`
+    1. strip text; empty → `EmptyThoughtError`; brain not initialized →
+       `BrainNotInitializedError`
+    2. `into` given → deterministic path, **zero LLM calls**: file under
+       `raw/YYYY/MM/DD/` with `classified_into` set
+    3. `route(text)` → link → `add_link_note(url, body_text=rest)`
+    4. else classify: read SCHEMA.md + INDEX.md (missing → `""`),
+       `build_classification_prompt`, `complete(response_model=IngestDecision)`;
+       validate: `class_path` None/empty → None; `slug` through `_derive_slug`
+       (≤60, kebab, ASCII); `title` stripped ≤100, fallback `"untitled"`; `body`
+       fallback to raw text
+    5. `class_path` set → `raw/YYYY/MM/DD/` with `classified_into`; null →
+       `inbox/`. Frontmatter `type: fleeting` as before. INDEX + LOG + one
+       commit `ingest: <title>`
+    6. any LLM-layer exception (incl. `LLMUnavailableError`) → inbox note with
+       raw text, LOG `ingest` payload gains `llm_error`, `IngestResult.warning`
+       set (`LLM unavailable: <msg>`) — a thought is never dropped
+  - `add_link_note(url, body_text=None) -> IngestResult` — minimal
+    reading-list note: `url` has trailing punctuation stripped
+    (`.,;:!?` and `)]}` — the router's regex keeps it); title = last URL path
+    segment (percent-decoded, ≤100 chars, fallback `"Untitled link"`); slug =
+    `_derive_slug(title)`; frontmatter `id, type: reading, title, created,
+    classified_into: null, sources: [], tags: [], url, status: unread,
+    summary: null`; body = `body_text` or `""`; path via
+    `reading_list_path_for`; INDEX class `reading-list`, LOG op `ingest`; one
+    commit; returns `IngestResult(class_path="reading-list")`
   - `add_link(url, ...)` — stub: `NotImplementedPhaseError("add_link", "2b")`
-  - `_derive_slug` / `_derive_title` — private helpers (tested)
+  - `_derive_slug` / `_derive_title` / `_clean_url` / `_derive_link_title` —
+    private helpers (tested)
 - **`triage.py`** — deterministic URL-only router (Phase 2a):
   - `Route` — frozen dataclass `(kind, url)`; `kind` is `"link"`
   - `route(content) -> Route | None` — pure, no I/O, no LLM: strips content;
@@ -240,8 +260,8 @@ No behavior was changed in the rename; tests were kept passing in substance.
     first line contains a URL AND remaining content ≤200 chars → link route
     with that URL; multi-URL → first URL wins (rest stays in the note body);
     everything else → `None` (needs LLM). Schemeless `www.` links → `None`.
-    Consumed by `add_thought` in Phase 2a to short-circuit URLs into
-    reading-list notes without an LLM call.
+    Consumed by `add_thought` to short-circuit URLs into reading-list notes
+    without an LLM call.
 - **`reading_list.py`** — the link queue (minimal Phase 1 version):
   - `ReadingItem` — dataclass `(id, title, url, status, summary, date_added)`
   - `list_items(status=None, topic=None)` — reads `reading-list/*.md`
@@ -315,14 +335,14 @@ or move files freely because cross-references are by `id`, never by path.
 1. **Atomic writes** — tempfile + fsync + rename; brain data is sacred.
 2. **One git commit per operation** — ingest = 1 commit, set_status = 1
    commit. `git log` in the brain is the time machine.
-3. **A thought is never dropped** — if the LLM pipeline (Phase 2) fails, the
-   note still lands in `inbox/` with a warning.
+3. **A thought is never dropped** — if the LLM classification fails, the
+   note still lands in `inbox/` with a warning (LOG records `llm_error`).
 4. **No stubs over MCP** — an MCP client can never call a tool that raises
    "not implemented". CLI can print placeholders (a human reads it).
 5. **Engine-first + dependency rule** — logic in `pal/engine/` only; engine
    never imports mcp/cli (guarded by `tests/test_engine_imports.py`).
 
-## 7. What's implemented vs. stubbed (as of Phase 1)
+## 7. What's implemented vs. stubbed (as of Phase 2a)
 
 | Capability | Status | Ships in |
 |---|---|---|
@@ -330,7 +350,8 @@ or move files freely because cross-references are by `id`, never by path.
 | `reading_list.list_items` / `set_status` | working (minimal) | Phase 1 |
 | `ingest.add_link` | stub | Phase 2b |
 | URL-only routing (`triage.route`) | working (pure router) | Phase 2a |
-| LLM classification | — | Phase 2a |
+| LLM classification (`add_thought` classify pipeline, inbox fallback) | working | Phase 2a |
+| `ingest.add_link_note` (minimal link notes) | working | Phase 2a |
 | `pal lint` / `run_lint` | stub | Phase 3 |
 | `pal ask` / `query` / `assemble_context` | stubs | Phase 4 |
 | `pal reindex` / `.index/` | placeholder | Phase 5 |
@@ -338,7 +359,8 @@ or move files freely because cross-references are by `id`, never by path.
 ## 8. Tests — how to run and what they guard
 
 ```powershell
-.venv\Scripts\python -m pytest            # full suite (94 tests)
+.venv\Scripts\python -m pytest            # full suite (105 tests; live skipped)
+.venv\Scripts\python -m pytest -m live    # live LLM tests (needs GEMINI_API_KEY)
 .venv\Scripts\python -m pytest tests\test_engine_imports.py   # dependency rule
 .venv\Scripts\python -m pytest --cov=pal.storage --cov-report=term-missing
 ```

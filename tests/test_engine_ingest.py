@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from pal.agent.llm import LLMUnavailableError
+from pal.agent.prompts import IngestDecision
 from pal.engine.errors import (
     BrainNotInitializedError,
     EmptyThoughtError,
@@ -161,3 +163,178 @@ def test_add_link_is_stub_until_phase_2b():
         add_link("https://example.com")
     assert exc_info.value.phase == "2b"
     assert "not implemented until Phase 2b" in str(exc_info.value)
+
+
+# ---------- Phase 2a: classify pipeline + link notes ----------
+
+
+def _fake_complete(decision: IngestDecision):
+    def _fn(messages: list[dict], **opts):
+        return decision
+
+    return _fn
+
+
+def _failing_complete(exc: Exception):
+    def _fn(messages: list[dict], **opts):
+        raise exc
+
+    return _fn
+
+
+def test_add_thought_classifies_into_existing_class(tmp_brain: Path, monkeypatch):
+    schema.ensure_brain_initialized()
+    captured: dict[str, list[dict]] = {}
+
+    def _fake(messages: list[dict], **opts):
+        captured["messages"] = messages
+        return IngestDecision(
+            class_path="marketing/cold-email",
+            slug="cold-email-slug",
+            title="Decision Title",
+            body="cleaned body text",
+            rationale="fits the existing class",
+        )
+
+    monkeypatch.setattr("pal.engine.ingest.complete", _fake)
+
+    result = add_thought("today I learned cold email subject lines")
+
+    assert result.class_path == "marketing/cold-email"
+    assert result.title == "Decision Title"
+    assert result.warning is None
+    assert captured["messages"][-1]["content"] == "today I learned cold email subject lines"
+    assert "Rules of the brain" in captured["messages"][0]["content"]
+
+    today = datetime.now(timezone.utc)
+    raw_dir = tmp_brain / "raw" / f"{today.year:04d}" / f"{today.month:02d}" / f"{today.day:02d}"
+    files = list(raw_dir.glob("*.md"))
+    assert files == [result.path]
+    assert files[0].name.endswith("--cold-email-slug.md")
+
+    fm, body = read_note(files[0])
+    assert fm["type"] == "fleeting"
+    assert fm["title"] == "Decision Title"
+    assert fm["classified_into"] == "marketing/cold-email"
+    assert body.strip() == "cleaned body text"
+    assert list((tmp_brain / "inbox").glob("*.md")) == []
+
+
+def test_add_thought_class_path_none_goes_to_inbox(tmp_brain: Path, monkeypatch):
+    schema.ensure_brain_initialized()
+    monkeypatch.setattr(
+        "pal.engine.ingest.complete",
+        _fake_complete(
+            IngestDecision(class_path=None, slug="some-slug", title="T", body="b")
+        ),
+    )
+    result = add_thought("uncertain thought")
+    assert result.class_path is None
+    assert result.title == "T"
+
+    files = list((tmp_brain / "inbox").glob("*.md"))
+    assert files == [result.path]
+    fm, _ = read_note(files[0])
+    assert fm["type"] == "fleeting"
+    assert fm["title"] == "T"
+    assert fm["classified_into"] is None
+
+
+def test_add_thought_url_routes_to_link_note(tmp_brain: Path):
+    schema.ensure_brain_initialized()
+    result = add_thought("https://example.com/article.")
+    assert result.class_path == "reading-list"
+    assert result.title == "article"
+    assert result.warning is None
+
+    files = list((tmp_brain / "reading-list").glob("*.md"))
+    assert files == [result.path]
+    assert files[0].name.endswith("--article.md")
+
+    fm, body = read_note(files[0])
+    assert fm["type"] == "reading"
+    assert fm["url"] == "https://example.com/article"
+    assert fm["status"] == "unread"
+    assert fm["summary"] is None
+    assert fm["classified_into"] is None
+    assert fm["sources"] == []
+    assert fm["tags"] == []
+    assert body.strip() == ""
+
+    index_text = (tmp_brain / "INDEX.md").read_text(encoding="utf-8")
+    assert "`reading-list`" in index_text
+    log_text = (tmp_brain / "LOG.md").read_text(encoding="utf-8")
+    payload = json.loads(log_text.splitlines()[-1].split(" ", 3)[-1])
+    assert payload["class"] == "reading-list"
+
+
+def test_add_thought_multiline_url_keeps_rest_as_body(tmp_brain: Path):
+    schema.ensure_brain_initialized()
+    result = add_thought("https://example.com\nsome context here")
+    assert result.class_path == "reading-list"
+    assert result.title == "Untitled link"
+    fm, body = read_note(result.path)
+    assert fm["url"] == "https://example.com"
+    assert body.strip() == "some context here"
+
+
+def test_add_thought_into_bypasses_llm(tmp_brain: Path, monkeypatch):
+    schema.ensure_brain_initialized()
+    monkeypatch.setattr(
+        "pal.engine.ingest.complete", _failing_complete(AssertionError("LLM called"))
+    )
+    result = add_thought("thought", into="experiments/cli")
+    assert result.class_path == "experiments/cli"
+    assert list((tmp_brain / "inbox").glob("*.md")) == []
+
+
+def test_add_thought_sanitizes_decision_slug(tmp_brain: Path, monkeypatch):
+    schema.ensure_brain_initialized()
+    monkeypatch.setattr(
+        "pal.engine.ingest.complete",
+        _fake_complete(
+            IngestDecision(
+                class_path="marketing/cold-email", slug="My Title!", title="T", body="b"
+            )
+        ),
+    )
+    result = add_thought("x")
+    assert result.path.name.endswith("--my-title.md")
+
+
+def test_add_thought_llm_unavailable_falls_back_to_inbox(tmp_brain: Path, monkeypatch):
+    schema.ensure_brain_initialized()
+    monkeypatch.setattr(
+        "pal.engine.ingest.complete",
+        _failing_complete(
+            LLMUnavailableError("all LLM candidates failed after 6 attempts")
+        ),
+    )
+    result = add_thought("some thought")
+    assert result.class_path is None
+    assert result.warning == "LLM unavailable: all LLM candidates failed after 6 attempts"
+    assert list((tmp_brain / "inbox").glob("*.md")) == [result.path]
+
+    fm, body = read_note(result.path)
+    assert fm["classified_into"] is None
+    assert body.strip() == "some thought"
+
+    log_text = (tmp_brain / "LOG.md").read_text(encoding="utf-8")
+    payload = json.loads(log_text.splitlines()[-1].split(" ", 3)[-1])
+    assert payload["llm_error"] == "all LLM candidates failed after 6 attempts"
+    assert payload["class"] == "inbox"
+
+
+def test_add_thought_unexpected_exception_falls_back_to_inbox(tmp_brain: Path, monkeypatch):
+    schema.ensure_brain_initialized()
+    monkeypatch.setattr(
+        "pal.engine.ingest.complete", _failing_complete(RuntimeError("boom"))
+    )
+    result = add_thought("some thought")
+    assert result.class_path is None
+    assert result.warning == "LLM unavailable: boom"
+    assert list((tmp_brain / "inbox").glob("*.md")) == [result.path]
+
+    log_text = (tmp_brain / "LOG.md").read_text(encoding="utf-8")
+    payload = json.loads(log_text.splitlines()[-1].split(" ", 3)[-1])
+    assert payload["llm_error"] == "boom"
