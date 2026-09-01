@@ -19,6 +19,7 @@ def _isolate_llm_keys(
     keys.
     """
     if request.node.get_closest_marker("live"):
+        yield
         return
     monkeypatch.setenv("GEMINI_API_KEYS", "")
     monkeypatch.setenv("GEMINI_API_KEY", "")
