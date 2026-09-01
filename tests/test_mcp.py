@@ -4,6 +4,7 @@ import asyncio
 import re
 from pathlib import Path
 
+from pal.agent.prompts import IngestDecision
 from pal.mcp.server import mcp
 from pal.storage import schema
 from pal.storage.files import read_note, write_note
@@ -76,12 +77,69 @@ def test_add_to_brain_category_hint_lands_in_raw(tmp_brain: Path):
     assert fm["classified_into"] == "marketing/cold-email"
 
 
-def test_add_to_brain_appends_source_url_to_body(tmp_brain: Path):
+def test_add_to_brain_source_url_files_link_note(tmp_brain: Path):
+    schema.ensure_brain_initialized()
+    out = _tool_fn("add_to_brain")("test thought", source_url="https://example.com/x")
+    assert out["status"] == "stored"
+    assert out["path"].startswith("reading-list/")
+    assert ULID_RE.match(out["id"])
+
+    notes = list((tmp_brain / "reading-list").glob("*.md"))
+    assert len(notes) == 1
+    fm, _ = read_note(notes[0])
+    assert fm["type"] == "reading"
+    assert fm["url"] == "https://example.com/x"
+    assert fm["status"] == "unread"
+    assert fm["summary"] is None
+
+
+def test_add_to_brain_source_url_does_not_append_to_body(tmp_brain: Path):
     schema.ensure_brain_initialized()
     out = _tool_fn("add_to_brain")("test thought", source_url="https://example.com/x")
     fm, body = read_note(brain_dir() / out["path"])
-    assert "Source: https://example.com/x" in body
-    assert fm["type"] == "fleeting"
+    assert "Source: https://example.com/x" not in body
+    assert body.strip() == "test thought"
+    assert fm["type"] == "reading"
+    assert fm["url"] == "https://example.com/x"
+
+
+def test_add_to_brain_content_only_goes_through_classify_pipeline(
+    tmp_brain: Path, monkeypatch
+):
+    schema.ensure_brain_initialized()
+    calls: list[list[dict]] = []
+
+    def _fake(messages: list[dict], **opts):
+        calls.append(messages)
+        return IngestDecision(
+            class_path="marketing/cold-email",
+            slug="cold-email-slug",
+            title="Decision Title",
+            body="cleaned body",
+            rationale="fits the existing class",
+        )
+
+    monkeypatch.setattr("pal.engine.ingest.complete", _fake)
+    out = _tool_fn("add_to_brain")("today I learned cold email subject lines")
+    assert out["status"] == "stored"
+    fm, body = read_note(brain_dir() / out["path"])
+    assert fm["classified_into"] == "marketing/cold-email"
+    assert body.strip() == "cleaned body"
+    assert len(calls) == 1
+    assert calls[0][-1]["content"] == "today I learned cold email subject lines"
+
+
+def test_add_to_brain_category_hint_maps_to_into_zero_llm(tmp_brain: Path, monkeypatch):
+    schema.ensure_brain_initialized()
+
+    def _boom(messages: list[dict], **opts):
+        raise AssertionError("LLM called for category_hint")
+
+    monkeypatch.setattr("pal.engine.ingest.complete", _boom)
+    out = _tool_fn("add_to_brain")("test thought", category_hint="experiments/cli")
+    assert out["status"] == "stored"
+    fm, _ = read_note(brain_dir() / out["path"])
+    assert fm["classified_into"] == "experiments/cli"
 
 
 def test_get_reading_list_empty_when_dir_missing(tmp_brain: Path):

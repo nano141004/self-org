@@ -304,9 +304,11 @@ No behavior was changed in the rename; tests were kept passing in substance.
 Exactly two tools, both fully working (never expose a stub over MCP):
 
 - `add_to_brain(content, source_url=None, category_hint=None)` — same note
-  format as `pal add`; `source_url` is appended to the body (`Source: <url>`)
-  until Phase 2a routes URLs properly; returns
-  `{status: "stored"|"inbox", path, id}`
+  format as `pal add`; `source_url` present routes to a minimal
+  reading-list note (`add_link_note`, no LLM call, no body appendix),
+  otherwise content flows through `add_thought`'s classify pipeline; returns
+  `{status: "stored"|"inbox", path, id}` (link notes report `stored` via
+  `class_path="reading-list"`)
 - `get_reading_list(topic=None, status=None)` — returns
   `[{title, url, summary, date_added}]` via `list_items`
 

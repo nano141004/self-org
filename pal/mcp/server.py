@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastmcp import FastMCP
 
-from pal.engine.ingest import add_thought
+from pal.engine.ingest import add_link_note, add_thought
 from pal.engine.reading_list import list_items
 from pal.storage.paths import brain_dir
 
@@ -19,16 +19,18 @@ def add_to_brain(
     """Capture one thought into the brain.
 
     Args:
-        content: The thought text to store.
-        source_url: Optional source URL; in Phase 1 it is appended to the
-            note body. Full link ingestion (fetch + summary) arrives in
-            Phase 2b.
+        content: The thought text to store. When source_url is given, it is
+            filed as the link note's body.
+        source_url: Optional source URL; routes to a minimal reading-list
+            note (no LLM call, no body appendix). Full link ingestion
+            (fetch + summary) arrives in Phase 2b.
         category_hint: Optional class path, e.g. "marketing/cold-email".
             Omit to send the thought to inbox/.
     """
     if source_url:
-        content = f"{content}\n\nSource: {source_url}"
-    result = add_thought(content, into=category_hint)
+        result = add_link_note(source_url, body_text=content)
+    else:
+        result = add_thought(content, into=category_hint)
     return {
         "status": "stored" if result.class_path else "inbox",
         "path": result.path.relative_to(brain_dir()).as_posix(),
