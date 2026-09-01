@@ -14,7 +14,7 @@ from pal.agent.prompts import (
     LinkDecision,
 )
 from pal.engine.errors import BrainNotInitializedError, EmptyThoughtError
-from pal.engine.fetch import MAX_BODY_CHARS, FetchError, FetchedPage, fetch_article
+from pal.engine.fetch import MAX_BODY_CHARS, THIN_TEXT_CHARS, FetchError, fetch_article
 from pal.engine.reading_list import find_by_url
 from pal.engine.triage import Route, route
 from pal.storage import git, schema
@@ -337,7 +337,11 @@ def add_link(url: str, note: str | None = None) -> IngestResult:
                 class_path="reading-list",
                 action="skipped-duplicate",
             )
-        commentary = body if not body.startswith(_FETCH_FAILED_PREFIX) else None
+        commentary = None
+        if body and not body.startswith(_FETCH_FAILED_PREFIX):
+            stripped = body.strip()
+            if stripped.startswith("> ") or len(stripped) < THIN_TEXT_CHARS:
+                commentary = body
         return _ingest_fetched_link(
             url, note=commentary or note, existing_path=existing, existing_fm=fm
         )

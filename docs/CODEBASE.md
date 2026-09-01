@@ -316,10 +316,13 @@ No behavior was changed in the rename; tests were kept passing in substance.
     2. dedup via `reading_list.find_by_url(url)`; existing note **with
        summary** → `action="skipped-duplicate"`, **no write, no commit**
     3. existing note **without summary** (a failed-fetch note) → upgrade in
-       place: same id + filename, keep the old body as commentary (unless it
-       is a `Fetch failed:` record), `schema.update_index_entry` for the new
-       title, LOG `action: "upgraded"` + `via`, one commit; re-fetch failure
-       → note untouched, `action="skipped-duplicate"` + `warning`
+       place: same id + filename, keep the old body as commentary (only when it
+       looks like user commentary — a blockquote-formatted body (`> `) or a
+       short one < `THIN_TEXT_CHARS`; long plain-text bodies are a failed
+       summarize's fetched article and are replaced by the re-fetch; `Fetch
+       failed:` records are never kept), `schema.update_index_entry` for the
+       new title, LOG `action: "upgraded"` + `via`, one commit; re-fetch
+       failure → note untouched, `action="skipped-duplicate"` + `warning`
     4. fresh + `fetch_article` raises `FetchError` → `add_link_note` with
        body `Fetch failed: <reason>` and LOG `fetch_error`; `warning` set —
        the URL is the recoverable artifact

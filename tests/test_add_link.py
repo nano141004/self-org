@@ -8,7 +8,7 @@ import pytest
 from pal.agent.prompts import LinkDecision
 from pal.engine.errors import EmptyThoughtError
 from pal.engine.fetch import FetchError, FetchedPage
-from pal.engine.ingest import add_link, add_thought
+from pal.engine.ingest import add_link, add_link_note, add_thought
 from pal.storage.files import read_note
 
 
@@ -119,6 +119,37 @@ def test_add_link_upgrade_refetch_failure_leaves_note(tmp_brain, link_env):
     assert again.warning is not None
     _, body_after = read_note(failed.path)
     assert body_after == body_before
+
+
+def test_add_link_upgrade_after_summarize_failure_does_not_quote_old_article(
+    tmp_brain, link_env
+):
+    link_env[0].side_effect = RuntimeError("llm down")
+    first = add_link("https://e.com/a")
+    fm, first_body = read_note(first.path)
+    assert fm["summary"] is None
+    assert len(first_body) > 200
+
+    link_env[0].side_effect = None
+    link_env[0].return_value = DECISION
+    upgraded = add_link("https://e.com/a")
+    assert upgraded.action == "upgraded"
+    assert upgraded.id == first.id
+    _, body = read_note(upgraded.path)
+    assert not body.startswith("> ")
+    assert body.strip() == PAGE.text.strip()
+    assert "\n> " not in body
+
+
+def test_add_link_upgrade_preserves_short_commentary(tmp_brain, link_env):
+    minimal = add_link_note("https://e.com/a", body_text="worth a read")
+    upgraded = add_link("https://e.com/a")
+    assert upgraded.action == "upgraded"
+    assert upgraded.id == minimal.id
+    _, body = read_note(upgraded.path)
+    assert body.startswith("> worth a read")
+    assert "---" in body
+    assert "Article body text." in body
 
 
 def test_add_thought_url_routes_to_full_flow(tmp_brain, link_env):
