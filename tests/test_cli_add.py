@@ -7,6 +7,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from pal.agent.prompts import IngestDecision
 from pal.cli.main import app
 from pal.storage.files import read_note
 
@@ -130,6 +131,114 @@ def test_add_normalizes_into_path(tmp_brain: Path):
     files = list(raw_dir.glob("*.md"))
     fm, _ = read_note(files[0])
     assert fm["classified_into"] == "marketing/cold"
+
+
+# ---------- CLI: add --dry-run / --why ----------
+
+
+def _fake_complete(decision: IngestDecision):
+    def _fake(messages: list[dict], **opts) -> IngestDecision:
+        return decision
+
+    return _fake
+
+
+def test_add_dry_run_writes_nothing(tmp_brain: Path, monkeypatch):
+    runner.invoke(app, ["init"])
+    commits_before = len(_git(["log", "--oneline"], cwd=tmp_brain).strip().splitlines())
+    monkeypatch.setattr(
+        "pal.cli.main.complete",
+        _fake_complete(
+            IngestDecision(
+                class_path="marketing/cold-email",
+                slug="cold-email",
+                title="Decision Title",
+                body="b",
+                rationale="r",
+            )
+        ),
+    )
+
+    result = runner.invoke(app, ["add", "--dry-run", "some thought"])
+    assert result.exit_code == 0, result.output
+    assert list((tmp_brain / "inbox").glob("*.md")) == []
+    assert list((tmp_brain / "raw").glob("**/*.md")) == []
+    assert list((tmp_brain / "reading-list").glob("*.md")) == []
+    commits_after = len(_git(["log", "--oneline"], cwd=tmp_brain).strip().splitlines())
+    assert commits_after == commits_before
+
+
+def test_add_dry_run_prints_decision_with_title(tmp_brain: Path, monkeypatch):
+    runner.invoke(app, ["init"])
+    monkeypatch.setattr(
+        "pal.cli.main.complete",
+        _fake_complete(
+            IngestDecision(
+                class_path="marketing/cold-email",
+                slug="cold-email",
+                title="Decision Title",
+                body="b",
+                rationale="fits the existing class",
+            )
+        ),
+    )
+
+    result = runner.invoke(
+        app, ["add", "--dry-run", "--why", "cold email subject lines"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "[dry-run] -> marketing/cold-email: Decision Title" in result.output
+    assert "rationale: fits the existing class" in result.output
+
+
+def test_add_dry_run_into_performs_zero_llm_calls(tmp_brain: Path, monkeypatch):
+    runner.invoke(app, ["init"])
+
+    def _boom(messages: list[dict], **opts):
+        raise AssertionError("LLM called")
+
+    monkeypatch.setattr("pal.cli.main.complete", _boom)
+    result = runner.invoke(
+        app, ["add", "--dry-run", "thought", "--into", "experiments/cli"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "[dry-run] -> experiments/cli: thought" in result.output
+    assert list((tmp_brain / "inbox").glob("*.md")) == []
+
+
+def test_add_why_prints_rationale(tmp_brain: Path, monkeypatch):
+    runner.invoke(app, ["init"])
+    decision = IngestDecision(
+        class_path="marketing/cold-email",
+        slug="cold-email",
+        title="Decision Title",
+        body="b",
+        rationale="fits the existing class",
+    )
+    monkeypatch.setattr("pal.cli.main.complete", _fake_complete(decision))
+    monkeypatch.setattr("pal.engine.ingest.complete", _fake_complete(decision))
+
+    result = runner.invoke(app, ["add", "--why", "cold email subject lines"])
+    assert result.exit_code == 0, result.output
+    assert "] -> marketing/cold-email: Decision Title" in result.output
+    assert "rationale: fits the existing class" in result.output
+
+    today = datetime.now(timezone.utc)
+    raw_dir = tmp_brain / "raw" / f"{today.year:04d}" / f"{today.month:02d}" / f"{today.day:02d}"
+    assert list(raw_dir.glob("*.md")) != []
+
+
+def test_add_llm_failure_warns_on_stderr_lands_in_inbox(tmp_brain: Path, monkeypatch):
+    runner.invoke(app, ["init"])
+
+    def _boom(messages: list[dict], **opts):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("pal.engine.ingest.complete", _boom)
+    result = runner.invoke(app, ["add", "some thought"])
+    assert result.exit_code == 0, result.output
+    assert "[warn] LLM unavailable: boom" in result.stderr
+    assert len(list((tmp_brain / "inbox").glob("*.md"))) == 1
 
 
 # ---------- CLI: phase placeholders ----------

@@ -276,9 +276,15 @@ No behavior was changed in the rename; tests were kept passing in substance.
 ### `pal/cli/main.py` — the CLI (thin adapter)
 
 - `init` — scaffolds the brain (idempotent)
-- `add "<text>" [--into <class>]` — calls `add_thought`; maps engine errors to
-  exit codes (empty text → 2, uninitialized → 1); prints
-  `[{id}] -> {where}: {title}`
+- `add "<text>" [--into <class>] [--dry-run] [--why]` — calls `add_thought`;
+  maps engine errors to exit codes (empty text → 2, uninitialized → 1); prints
+  `[{id}] -> {where}: {title}`. `--dry-run` prints the decision
+  (`[dry-run] -> …`) and writes nothing; with `--into` it is deterministic
+  (zero LLM calls), otherwise it runs the same route + classification steps
+  (public `triage.route` / `agent.prompts.build_classification_prompt` /
+  `agent.llm.complete`). `--why` appends `rationale: <…>`; titles/slugs in
+  dry-run mirror the engine's derivations. `IngestResult.warning` is echoed
+  as `[warn] <warning>` on stderr with exit code 0.
 - `ask "<question>"` / `lint` — call engine, catch
   `NotImplementedPhaseError`, print "coming in Phase N"
 - `reindex` — prints "coming in Phase 5" (no engine seam yet)
@@ -359,7 +365,7 @@ or move files freely because cross-references are by `id`, never by path.
 ## 8. Tests — how to run and what they guard
 
 ```powershell
-.venv\Scripts\python -m pytest            # full suite (105 tests; live skipped)
+.venv\Scripts\python -m pytest            # full suite (110 tests; live skipped)
 .venv\Scripts\python -m pytest -m live    # live LLM tests (needs GEMINI_API_KEY)
 .venv\Scripts\python -m pytest tests\test_engine_imports.py   # dependency rule
 .venv\Scripts\python -m pytest --cov=pal.storage --cov-report=term-missing
@@ -378,6 +384,7 @@ restart's promise is that storage behavior did not change.
 .venv\Scripts\pal init                             # scaffold ~/brain/
 .venv\Scripts\pal add "some thought"               # → inbox/
 .venv\Scripts\pal add "x" --into marketing/cold    # → raw/…/ with class
+.venv\Scripts\pal add "x" --dry-run --why          # print decision only, nothing written
 .venv\Scripts\pal-mcp                              # serve MCP over stdio
 ```
 
