@@ -152,7 +152,7 @@ def _store_fleeting(
     schema.append_log_entry("ingest", payload)
     git.commit(f"ingest: {title}", [path, index_path(), log_path()])
 
-    warning = f"LLM unavailable: {llm_error}" if llm_error is not None else None
+    warning = f"LLM classification failed: {llm_error}" if llm_error is not None else None
     return IngestResult(
         id=note_id,
         title=title,
@@ -229,6 +229,25 @@ def add_thought(text: str, into: str | None = None) -> IngestResult:
 
     try:
         outcome = classify_thought(text)
+        if isinstance(outcome, Route):
+            rest = text.replace(outcome.url, "", 1).strip()
+            return add_link_note(outcome.url, body_text=rest or None)
+
+        raw_class = (outcome.class_path or "").strip().strip("/")
+        class_path = raw_class or None
+        title = (outcome.title or "").strip()[:TITLE_MAX] or "untitled"
+        raw_slug = (outcome.slug or "").strip()
+        slug = _derive_slug(raw_slug or title)
+        body = (outcome.body or "").strip() or text
+        rationale = (outcome.rationale or "").strip() or None
+
+        return _store_fleeting(
+            title=title,
+            slug=slug,
+            class_path=class_path,
+            body=body,
+            rationale=rationale,
+        )
     except Exception as exc:
         return _store_fleeting(
             title=derive_title(text) or "untitled",
@@ -237,28 +256,6 @@ def add_thought(text: str, into: str | None = None) -> IngestResult:
             body=text,
             llm_error=str(exc),
         )
-
-    if isinstance(outcome, Route):
-        rest = text.replace(outcome.url, "", 1).strip()
-        return add_link_note(outcome.url, body_text=rest or None)
-
-    decision = outcome if isinstance(outcome, IngestDecision) else IngestDecision()
-
-    raw_class = (decision.class_path or "").strip().strip("/")
-    class_path = raw_class or None
-    title = (decision.title or "").strip()[:TITLE_MAX] or "untitled"
-    raw_slug = (decision.slug or "").strip()
-    slug = _derive_slug(raw_slug or title)
-    body = (decision.body or "").strip() or text
-    rationale = (decision.rationale or "").strip() or None
-
-    return _store_fleeting(
-        title=title,
-        slug=slug,
-        class_path=class_path,
-        body=body,
-        rationale=rationale,
-    )
 
 
 def add_link(url: str, category_hint: str | None = None) -> None:

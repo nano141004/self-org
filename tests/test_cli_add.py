@@ -277,7 +277,7 @@ def test_add_llm_failure_warns_on_stderr_lands_in_inbox(tmp_brain: Path, monkeyp
     monkeypatch.setattr("pal.engine.ingest.complete", _boom)
     result = runner.invoke(app, ["add", "some thought"])
     assert result.exit_code == 0, result.output
-    assert "[warn] LLM unavailable: boom" in result.stderr
+    assert "[warn] LLM classification failed: boom" in result.stderr
     assert len(list((tmp_brain / "inbox").glob("*.md"))) == 1
 
 

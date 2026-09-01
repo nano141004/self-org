@@ -336,7 +336,7 @@ def test_add_thought_llm_unavailable_falls_back_to_inbox(tmp_brain: Path, monkey
     )
     result = add_thought("some thought")
     assert result.class_path is None
-    assert result.warning == "LLM unavailable: all LLM candidates failed after 6 attempts"
+    assert result.warning == "LLM classification failed: all LLM candidates failed after 6 attempts"
     assert result.rationale is None
     assert list((tmp_brain / "inbox").glob("*.md")) == [result.path]
 
@@ -357,7 +357,7 @@ def test_add_thought_unexpected_exception_falls_back_to_inbox(tmp_brain: Path, m
     )
     result = add_thought("some thought")
     assert result.class_path is None
-    assert result.warning == "LLM unavailable: boom"
+    assert result.warning == "LLM classification failed: boom"
     assert list((tmp_brain / "inbox").glob("*.md")) == [result.path]
 
     log_text = (tmp_brain / "LOG.md").read_text(encoding="utf-8")

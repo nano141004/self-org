@@ -241,9 +241,11 @@ No behavior was changed in the rename; tests were kept passing in substance.
     5. `class_path` set → `raw/YYYY/MM/DD/` with `classified_into`; null →
        `inbox/`. Frontmatter `type: fleeting` as before. INDEX + LOG + one
        commit `ingest: <title>`
-    6. any LLM-layer exception (incl. `LLMUnavailableError`) → inbox note with
-       raw text, LOG `ingest` payload gains `llm_error`, `IngestResult.warning`
-       set (`LLM unavailable: <msg>`) — a thought is never dropped
+    6. any exception from classify or decision processing (incl.
+       `LLMUnavailableError`, and any drift in what `complete` returns) →
+       inbox note with raw text, LOG `ingest` payload gains `llm_error`,
+       `IngestResult.warning` set (`LLM classification failed: <msg>`) — a
+       thought is never dropped
   - `classify_thought(text) -> Route | IngestDecision` — the no-write classify
     seam: same guards as `add_thought` (empty text, uninitialized brain); URL
     text → `Route` (link); everything else → build prompt + `complete(
