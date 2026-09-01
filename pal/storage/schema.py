@@ -122,6 +122,29 @@ def append_log_entry(operation: str, payload: dict) -> None:
     _append(log_path(), line)
 
 
+def update_index_entry(note_id: str, *, title: str) -> None:
+    """Rewrite the title of the matching INDEX.md line in place.
+
+    Class and path are unchanged (in-place upgrades keep the filename).
+    No commit — the caller owns the operation's commit. Missing id → no-op.
+    """
+    path = index_path()
+    if not path.is_file():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if not line.startswith(f"- `{note_id}` "):
+            continue
+        head, sep, rel = line.partition(" → ")
+        backticks = [j for j, ch in enumerate(head) if ch == "`"]
+        if len(backticks) < 4:
+            return
+        cut = backticks[3] + 2  # skip the class token's closing backtick + space
+        lines[i] = f"{head[:cut]}{title}{' → ' + rel if sep else line[-1]}"
+        write_atomic(path, "".join(lines))
+        return
+
+
 def _append(path: Path, line: str) -> None:
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
     if existing and not existing.endswith("\n"):

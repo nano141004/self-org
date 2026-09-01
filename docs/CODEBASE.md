@@ -93,7 +93,7 @@ self-org/
 │   │   └── server.py           # FastMCP stdio server, 2 tools
 │   └── cli/
 │       └── main.py             # Typer CLI: init / add / ask / lint / reindex
-├── tests/                      # pytest suite (136 tests; 3 live)
+├── tests/                      # pytest suite (137 tests; 3 live)
 │   ├── conftest.py             # fixtures: isolated BRAIN_DIR + cleared LLM keys
 │   ├── test_config.py          # settings: defaults + env splitting
 │   ├── test_llm.py             # LLM wrapper: rotation, budgets, parsing
@@ -243,6 +243,9 @@ No behavior was changed in the rename; tests were kept passing in substance.
     meta files + `git init` + one `init: scaffold brain` commit
   - `append_index_entry(...)` — one `- \`id\` \`class\` title → path` line in
     `INDEX.md`
+  - `update_index_entry(id, *, title)` — rewrites the title of the matching
+    `INDEX.md` line in place (class + path unchanged); no commit; no-op on
+    missing id
   - `append_log_entry(op, payload)` — one `- \`ISO-time\` \`op\` {json}` line
     in `LOG.md`
 - **`git.py`** — thin subprocess wrapper: `is_repo()`, `init_repo()`,
@@ -334,9 +337,12 @@ No behavior was changed in the rename; tests were kept passing in substance.
     Consumed by `add_thought` to short-circuit URLs into reading-list notes
     without an LLM call.
 - **`reading_list.py`** — the link queue (minimal Phase 1 version):
-  - `ReadingItem` — dataclass `(id, title, url, status, summary, date_added)`
+  - `ReadingItem` — dataclass `(id, title, url, status, summary, date_added,
+    author=None, published=None)`; `author`/`published` mapped from frontmatter
   - `list_items(status=None, topic=None)` — reads `reading-list/*.md`
     (missing dir → `[]`); `topic` = case-insensitive substring of title/url
+  - `find_by_url(url)` — exact match on `url` frontmatter across
+    `reading-list/*.md`; `None` when absent or dir missing
   - `set_status(note_id, status)` — validates against
     `("unread","reading","archived")`, rewrites frontmatter atomically, LOG
     entry, one commit `set status: <status> <id>`
@@ -441,7 +447,7 @@ or move files freely because cross-references are by `id`, never by path.
 ## 8. Tests — how to run and what they guard
 
 ```powershell
-.venv\Scripts\python -m pytest            # full suite (136 tests; 3 live skipped)
+.venv\Scripts\python -m pytest            # full suite (137 tests; 3 live skipped)
 .venv\Scripts\python -m pytest -m live    # live LLM tests (needs GEMINI_API_KEY)
 .venv\Scripts\python -m pytest tests\test_engine_imports.py   # dependency rule (engine + agent)
 .venv\Scripts\python -m pytest --cov=pal.storage --cov-report=term-missing

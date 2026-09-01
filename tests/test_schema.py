@@ -106,3 +106,24 @@ def test_multiple_appends_accumulate(tmp_brain: Path):
     assert len(lines) == 2
     assert "`01H1`" in lines[0]
     assert "`01H2`" in lines[1]
+
+
+def _seed_index(brain_root, entries):
+    brain_root.mkdir(parents=True, exist_ok=True)
+    lines = "# Index\n\n" + "".join(f"{e}\n" for e in entries)
+    (brain_root / "INDEX.md").write_text(lines, encoding="utf-8")
+
+
+def test_update_index_entry_rewrites_title_only(tmp_brain):
+    _seed_index(tmp_brain, ["- `01A` `reading-list` Old Title → reading-list/01A--old.md"])
+    schema.update_index_entry("01A", title="New Title")
+    text = (tmp_brain / "INDEX.md").read_text(encoding="utf-8")
+    assert "- `01A` `reading-list` New Title → reading-list/01A--old.md" in text
+    assert "Old Title" not in text
+
+
+def test_update_index_entry_missing_id_noop(tmp_brain):
+    _seed_index(tmp_brain, ["- `01A` `reading-list` Title → reading-list/01A.md"])
+    schema.update_index_entry("ZZZ", title="Whatever")
+    text = (tmp_brain / "INDEX.md").read_text(encoding="utf-8")
+    assert "Title" in text

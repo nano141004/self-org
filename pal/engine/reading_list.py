@@ -20,6 +20,8 @@ class ReadingItem:
     status: str | None
     summary: str | None
     date_added: str | None
+    author: str | None = None
+    published: str | None = None
 
 
 def _item_from_path(path: Path) -> ReadingItem:
@@ -31,7 +33,21 @@ def _item_from_path(path: Path) -> ReadingItem:
         status=fm.get("status"),
         summary=fm.get("summary"),
         date_added=fm.get("created"),
+        author=fm.get("author"),
+        published=fm.get("published"),
     )
+
+
+def find_by_url(url: str) -> Path | None:
+    """Return the path of the reading-list note whose url matches exactly."""
+    root = brain_dir() / "reading-list"
+    if not root.is_dir():
+        return None
+    for p in sorted(root.glob("*.md")):
+        fm, _ = read_note(p)
+        if fm.get("url") == url:
+            return p
+    return None
 
 
 def list_items(status: str | None = None, topic: str | None = None) -> list[ReadingItem]:

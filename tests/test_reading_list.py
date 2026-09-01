@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from pal.engine.errors import ReadingItemNotFoundError
-from pal.engine.reading_list import ReadingItem, list_items, set_status
+from pal.engine.reading_list import ReadingItem, find_by_url, list_items, set_status
 from pal.storage import schema
 from pal.storage.files import write_note
 from pal.storage.paths import reading_list_path_for
@@ -92,3 +92,27 @@ def test_set_status_rejects_invalid_status(seed_items: Path):
 def test_set_status_unknown_id_raises(seed_items: Path):
     with pytest.raises(ReadingItemNotFoundError):
         set_status("01HXZZZ", "unread")
+
+
+def test_item_from_path_maps_author_published(tmp_brain):
+    p = tmp_brain / "reading-list"
+    p.mkdir(parents=True)
+    (p / "01A--x.md").write_text(
+        "---\nid: 01A\ntitle: X\nurl: https://e.com/a\nstatus: unread\n"
+        'summary: "s"\nauthor: "Ada"\npublished: "2026-01-02"\n---\nbody\n',
+        encoding="utf-8",
+    )
+    items = list_items()
+    assert items[0].author == "Ada"
+    assert items[0].published == "2026-01-02"
+
+
+def test_find_by_url_hit_and_miss(tmp_brain):
+    p = tmp_brain / "reading-list"
+    p.mkdir(parents=True)
+    (p / "01A--x.md").write_text(
+        "---\nid: 01A\ntitle: X\nurl: https://e.com/a\nstatus: unread\n---\n",
+        encoding="utf-8",
+    )
+    assert find_by_url("https://e.com/a") == p / "01A--x.md"
+    assert find_by_url("https://e.com/other") is None
