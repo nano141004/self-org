@@ -165,7 +165,9 @@ def test_response_model_parses_completion(monkeypatch):
 def test_parse_failure_rotates_to_next_candidate(monkeypatch):
     _setup_llm_env(monkeypatch, keys="k1,k2")
     monkeypatch.setattr("pal.agent.llm.MAX_TOTAL_ATTEMPTS", 100)
-    payload = json.dumps({"class_path": "inbox", "slug": "x", "title": "X", "body": "", "rationale": ""})
+    payload = json.dumps(
+        {"class_path": "inbox", "slug": "x", "title": "X", "body": "", "rationale": ""}
+    )
     seen = []
 
     def fake_completion(**kwargs):
