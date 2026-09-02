@@ -90,9 +90,9 @@ self-org/
 │   │   ├── files.py            # atomic writes, note read/write
 │   │   └── git.py              # git commands via subprocess
 │   ├── mcp/
-│   │   └── server.py           # FastMCP stdio server, 2 tools
+│   │   └── server.py           # FastMCP stdio server, 3 tools (add_to_brain, get_reading_list, run_lint)
 │   └── cli/
-│       └── main.py             # Typer CLI: init / add / ask / lint / reindex
+│       └── main.py             # Typer CLI: init / add / add-link / ask / lint (weekly reorg: plan_lint → render_diff → interactive [a/r/s/c]/--auto/--dry-run → apply_changeset single commit) / reindex
 ├── tests/                      # pytest suite (276 tests; 5 live)
 │   ├── conftest.py             # fixtures: isolated BRAIN_DIR + cleared LLM keys
 │   ├── test_config.py          # settings: defaults + env splitting
@@ -412,8 +412,8 @@ Ported as-is in Phase 1; Phase 3 added `sanitize_slug`/`wiki_path_for` (paths) a
    - `plan_lint(brain_dir=None) -> LintChangeset` — no-write planning: `collect_candidates`+`group_for_folding`, reads SCHEMA.md+INDEX.md, builds `layout_stats`/`wiki_snippets` (≤5, ≤600 chars) + `candidates[:10]`; **3 sequential `complete` calls** each wrapped in `try/except LLMUnavailableError` → `partial_failures` (`"folding"`/`"taxonomy"`/`"contradictions"`): (1) folding `build_lint_folding_prompt` → `FoldingResult.concepts`, (2) taxonomy `build_lint_taxonomy_prompt` → `TaxonomyResult.moves`, (3) contradiction `build_lint_contradiction_prompt` → `ContradictionResult.flags+schema_recs`; aggregates, sets `partial_failures`, then `validate_changeset` the union — never drops notes, partial failure keeps successful sub-results
    - `render_diff(cs) -> str` / `render_diff_text(cs) -> str` — diff preview (Rich-ready; `render_diff_text` is plain-text alias for MCP): Move `— from → to` arrow + `classified_into: → new_class`, Concept `+ wiki/<topic>/<slug>.md (sources: …)` + 120-char body preview, `⚠ flag` / `💡 schema` lines, footer `Summary: Nm/Nc/Nf/Nr` + `⚠ partial_failure: …` when set
    - `apply_changeset(cs, *, dry_run=False, brain_dir=None) -> LintResult` — atomic apply: `dry_run` returns `applied=False` with no writes; `auto` moves via `update_index_move(root=brain)` (klass+rel rewrite, preserves title) + `read_note`/`write_note`/`unlink`, concepts via `wiki_path_for(root=brain)` + `write_note(type:concept)` + `append_index_entry(root=brain, type:concept)`; single `append_lint_log(root=brain)` + single `git.commit(msg, uniq, cwd=brain)` with `isocalendar` weekly message `lint: weekly review YYYY-Www`; dirty-on-failure (no LOG if pre-commit error, LOG dirty if commit fails); explicit `brain_dir` threading throughout; guard `_is_inside_brain` rejects absolute/`..` before any write
-   - Helpers: `_sanitize_slug`, `_is_inside_brain`, `_read_file_safe`, `_layout_stats`, `_folding_preview`, `_collect_wiki_snippets`, `_to_engine_*` converters, `_body_preview`
-   - `run_lint(*args, **kwargs)` — still raises `NotImplementedPhaseError("lint", "3")` (CLI/MCP ship in Phase D) to preserve Phase-2 stub contract
+    - Helpers: `_sanitize_slug`, `_is_inside_brain`, `_read_file_safe`, `_layout_stats`, `_folding_preview`, `_collect_wiki_snippets`, `_to_engine_*` converters, `_body_preview`
+    - `run_lint` seam removed in Phase D — CLI/MCP now call `plan_lint`/`render_diff`/`apply_changeset` directly
 
 ### `pal/cli/main.py` — the CLI (thin adapter)
 
@@ -443,13 +443,13 @@ Ported as-is in Phase 1; Phase 3 added `sanitize_slug`/`wiki_path_for` (paths) a
   dispatches on `IngestResult.action` (`created` | `skipped-duplicate` |
   `upgraded`), reads the note's `summary` frontmatter via `_summary_of`, and
   echoes `[warn] …` on stderr when `result.warning` is set.
-- `ask "<question>"` / `lint` — call engine, catch
-  `NotImplementedPhaseError`, print "coming in Phase N"
+- `ask "<question>"` — calls engine, catches `NotImplementedPhaseError`, prints "coming in Phase 4" (stub)
+- `lint [--auto] [--dry-run] [--verbose]` — weekly reorg (Phase D shipped): mutual-exclusive guard `--auto`+`--dry-run` → exit 2; `plan_lint()` (BrainNotInitialized → exit 1, KeyboardInterrupt → 130); `render_diff(cs)` via Rich; `--verbose` dumps `cs.model_dump_json`; empty changeset (no moves/concepts/flags/recs) → "No changes to apply." with no commit/prompt; `--dry-run` shows diff and returns (no writes); otherwise interactive prompt `[a]uto-apply [r]eview each [s]ave diff [c]ancel` (default `c`, KeyboardInterrupt/EOF → 130): `a` → apply all, `r` → per-move/per-concept `y/n` filter (keep all flags/recs, "No changes selected." if empty), `s` → write `lint-YYYY-Www.diff` to brain root and return, `c` → "Cancelled."; `--auto` skips prompt and applies all; apply via `apply_changeset(target_cs)` → prints `lint: Nm moves, Nc concepts, Nf flags, Nr recs → <commit>` (KeyboardInterrupt → 130)
 - `reindex` — prints "coming in Phase 5" (no engine seam yet)
 
 ### `pal/mcp/server.py` — the MCP server (thin adapter, stdio)
 
-Exactly two tools, both fully working (never expose a stub over MCP):
+Three tools, all fully working (never expose a stub over MCP):
 
 - `add_to_brain(content, source_url=None, category_hint=None)` — same note
   format as `pal add`; `source_url` present routes through the full
@@ -461,6 +461,7 @@ Exactly two tools, both fully working (never expose a stub over MCP):
   `class_path="reading-list"`
 - `get_reading_list(topic=None, status=None)` — returns
   `[{title, url, summary, date_added, author, published}]` via `list_items`
+- `run_lint(apply=False)` — weekly lint pass (Phase D): `plan_lint()` (BrainNotInitialized → `{error, applied:false}`); `render_diff_text(cs)` + `recommendations` from `schema_recs`; `apply=False` (default) → dry-run preview `{applied:false, changes, diff, recommendations, commit:null}` with no writes; `apply=True` → empty changeset guard returns same dry-run shape (no commit, AC7 total LLM failure); otherwise `apply_changeset(cs)` → `{applied:true, changes, diff, recommendations, commit}`; BrainNotInitialized on apply → error shape. Uses `render_diff_text` (plain-text) for MCP.
 
 `main()` runs the stdio server; entry point `pal-mcp`.
 
@@ -511,7 +512,7 @@ or move files freely because cross-references are by `id`, never by path.
    never imports mcp/cli, and agent never imports engine/mcp/cli (guarded by
    `tests/test_engine_imports.py`).
 
-## 7. What's implemented vs. stubbed (Phase 1 + 2a + 2b + 3 A+B+C shipped)
+## 7. What's implemented vs. stubbed (Phase 1 + 2a + 2b + 3 shipped — all 4 phases)
 
 | Capability | Status | Ships in |
 |---|---|---|
@@ -521,7 +522,7 @@ or move files freely because cross-references are by `id`, never by path.
 | URL-only routing (`triage.route`) | working (pure router) | Phase 2a |
 | LLM classification (`add_thought` classify pipeline, inbox fallback) | working | Phase 2a |
 | `ingest.add_link_note` (minimal link notes) | working | Phase 2a |
-| `pal lint` / `run_lint` / `plan_lint` / `render_diff` / `apply_changeset` | Phase A+B+C done (collect/validate/plan + render_diff/apply_changeset atomic single commit) — CLI/MCP pending Phase D | Phase 3 |
+| `pal lint` / `run_lint` / `plan_lint` / `render_diff` / `apply_changeset` | working — Phase 3 shipped (A+B+C engine + D CLI/MCP): `plan_lint` 3-call + validate, `render_diff`/`apply_changeset` atomic single commit, CLI interactive [a/r/s/c]/--auto/--dry-run + empty guard + Rich diff, MCP `run_lint` dry-run vs apply | Phase 3 |
 | `pal ask` / `query` / `assemble_context` | stubs | Phase 4 |
 | `pal reindex` / `.index/` | placeholder | Phase 5 |
 
@@ -543,7 +544,7 @@ Storage tests were ported from the old `brain` project unchanged — the
 restart's promise is that storage behavior did not change. Phase 3 added
 `tests/test_lint_storage.py` (30 tests: `sanitize_slug`/`wiki_path_for`/`update_index_move`/`append_lint_log`),
 `tests/test_lint_prompts.py` (18 tests: lint prompt budgets + serialization), and
-`tests/test_lint_engine.py` (68 tests: `collect_candidates`/`group_for_folding`/`validate_changeset`/`plan_lint` partial failures + Phase C `render_diff`/`apply_changeset` atomicity/dry_run/dirty-on-failure/root threading).
+`tests/test_lint_engine.py` (68 tests: `collect_candidates`/`group_for_folding`/`validate_changeset`/`plan_lint` partial failures + Phase C `render_diff`/`apply_changeset` atomicity/dry_run/dirty-on-failure/root threading). Phase D updated `tests/test_cli_add.py` (lint `--dry-run` + `--auto`/`--dry-run` mutual-exclusive exit 2) and `tests/test_mcp.py` (3 tools including `run_lint`); total remains 276 tests (5 live skipped).
 
 ## 9. Everyday workflows
 

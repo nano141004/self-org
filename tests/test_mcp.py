@@ -48,7 +48,7 @@ def _seed_reading_note(
 
 
 def test_exposes_exactly_add_to_brain_and_get_reading_list():
-    assert _tool_names() == ["add_to_brain", "get_reading_list"]
+    assert _tool_names() == ["add_to_brain", "get_reading_list", "run_lint"]
 
 
 def test_add_to_brain_returns_status_path_id(tmp_brain: Path):

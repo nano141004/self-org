@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from fastmcp import FastMCP
 
+from pal.engine import lint as lint_engine
+from pal.engine.errors import BrainNotInitializedError
 from pal.engine.ingest import add_link, add_thought
 from pal.engine.reading_list import list_items
 from pal.storage.paths import brain_dir
@@ -63,6 +65,46 @@ def get_reading_list(
         }
         for item in list_items(topic=topic, status=status)
     ]
+
+
+@mcp.tool()
+def run_lint(apply: bool = False) -> dict:
+    """Run weekly lint pass. By default dry-run preview; set apply=true to apply one commit."""
+    try:
+        cs = lint_engine.plan_lint()
+    except BrainNotInitializedError:
+        return {"error": "brain not initialized", "applied": False}
+    diff = lint_engine.render_diff_text(cs)
+    recommendations = [r.model_dump(mode="json") for r in cs.schema_recs]
+    if not apply:
+        return {
+            "applied": False,
+            "changes": cs.model_dump(mode="json"),
+            "diff": diff,
+            "recommendations": recommendations,
+            "commit": None,
+        }
+    # apply=True: empty changeset → no commit (AC7 total LLM failure)
+    if not cs.moves and not cs.concepts and not cs.flags and not cs.schema_recs:
+        return {
+            "applied": False,
+            "changes": cs.model_dump(mode="json"),
+            "diff": diff,
+            "recommendations": recommendations,
+            "commit": None,
+        }
+    try:
+        result = lint_engine.apply_changeset(cs)
+    except BrainNotInitializedError:
+        return {"error": "brain not initialized", "applied": False}
+    recs = [r.model_dump(mode="json") for r in result.changeset.schema_recs]
+    return {
+        "applied": True,
+        "changes": result.changeset.model_dump(mode="json"),
+        "diff": diff,
+        "recommendations": recs,
+        "commit": result.commit_hash,
+    }
 
 
 def main() -> None:

@@ -349,11 +349,17 @@ def test_ask_prints_coming_in_phase_4(tmp_brain: Path):
     assert "coming in Phase 4" in result.output
 
 
-def test_lint_prints_coming_in_phase_3(tmp_brain: Path):
+def test_lint_dry_run_shows_diff(tmp_brain: Path):
     runner.invoke(app, ["init"])
-    result = runner.invoke(app, ["lint"])
+    result = runner.invoke(app, ["lint", "--dry-run"])
     assert result.exit_code == 0
-    assert "coming in Phase 3" in result.output
+    assert "Summary:" in result.output or "No changes" in result.output
+
+
+def test_lint_mutually_exclusive_auto_dry_run(tmp_brain: Path):
+    runner.invoke(app, ["init"])
+    result = runner.invoke(app, ["lint", "--auto", "--dry-run"])
+    assert result.exit_code == 2
 
 
 def test_reindex_prints_coming_in_phase_5(tmp_brain: Path):
