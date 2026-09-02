@@ -27,6 +27,7 @@ from pal.storage.paths import (
     log_path,
     raw_path_for,
     reading_list_path_for,
+    sanitize_slug,
     schema_path,
 )
 
@@ -37,12 +38,8 @@ TITLE_MAX = 100
 _URL_TRAILING_PUNCT = re.compile(r"[.,;:!?)\]}\"'”’]+$")
 
 
-def _derive_slug(text: str) -> str:
-    words = text.split()[:6]
-    joined = " ".join(words).lower()
-    s = re.sub(r"[^a-z0-9]+", "-", joined).strip("-")
-    s = s[:SLUG_MAX].rstrip("-")
-    return s or "untitled"
+def _derive_slug(title: str) -> str:
+    return sanitize_slug(title)
 
 
 def derive_title(text: str) -> str:

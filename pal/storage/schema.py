@@ -145,6 +145,37 @@ def update_index_entry(note_id: str, *, title: str) -> None:
         return
 
 
+def update_index_move(note_id: str, *, new_class: str | None, new_rel: str) -> None:
+    """Rewrite klass and rel of the matching INDEX.md line atomically.
+
+    Line format: ``- `id` `klass` title → rel``. Both klass and rel are
+    replaced; title is preserved. Missing id → no-op. No commit.
+    """
+    path = index_path()
+    if not path.is_file():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if not line.startswith(f"- `{note_id}` "):
+            continue
+        head, sep, _old_rel = line.partition(" → ")
+        backticks = [j for j, ch in enumerate(head) if ch == "`"]
+        if len(backticks) < 4:
+            return
+        cut = backticks[3] + 2
+        title = head[cut:]
+        klass = (new_class or "").strip().strip("/")
+        klass_token = klass or "inbox"
+        lines[i] = f"- `{note_id}` `{klass_token}` {title} → {new_rel}\n"
+        write_atomic(path, "".join(lines))
+        return
+
+
+def append_lint_log(payload: dict) -> None:
+    """Thin wrapper over append_log_entry for lint operations."""
+    append_log_entry("lint", payload)
+
+
 def _append(path: Path, line: str) -> None:
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
     if existing and not existing.endswith("\n"):
