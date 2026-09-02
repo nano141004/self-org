@@ -621,3 +621,304 @@ def test_validate_schema_recs_pass_through(tmp_brain: Path):
     cs = LintChangeset(schema_recs=[SchemaRec(suggestion="split marketing", rationale="too big")])
     out = validate_changeset(cs, cands, brain_dir=tmp_brain)
     assert len(out.schema_recs) == 1
+
+
+# ---------------------------------------------------------------------------
+# plan_lint — 3-call orchestration (Phase B)
+# ---------------------------------------------------------------------------
+
+
+def _seed_plan_candidates(tmp_brain: Path):
+    """Seed inbox/raw with 4 candidates sharing 'inbox' group for folding."""
+    schema.ensure_brain_initialized()
+    _write_fm_note(tmp_brain / "inbox" / "01A--a.md", id="01A", title="Alpha", created="2026-01-01T00:00:00Z", body="body A")
+    _write_fm_note(tmp_brain / "inbox" / "01B--b.md", id="01B", title="Beta", created="2026-01-02T00:00:00Z", body="body B")
+    _write_fm_note(tmp_brain / "inbox" / "01C--c.md", id="01C", title="Gamma", created="2026-01-03T00:00:00Z", body="body C")
+    _write_fm_note(tmp_brain / "inbox" / "01D--d.md", id="01D", title="Delta", created="2026-01-04T00:00:00Z", body="body D")
+
+
+def test_plan_lint_aggregates_three_successful_returns(tmp_brain: Path, mocker):
+    from pal.agent.llm import LLMUnavailableError  # noqa: ensure import path
+
+    _seed_plan_candidates(tmp_brain)
+
+    from pal.agent.prompts import ContradictionResult, FoldingResult, TaxonomyResult
+
+    fold_res = FoldingResult(
+        concepts=[
+            {
+                "topic": "ml",
+                "slug": "my-concept",
+                "title": "My Concept",
+                "body": "synthesis body",
+                "sources": ["01A", "01B", "01C"],
+            }
+        ],
+        rationale="fold",
+    )
+    tax_res = TaxonomyResult(
+        moves=[
+            {
+                "id": "01A",
+                "from_path": "inbox/01A--a.md",
+                "to_class": "ml",
+                "to_path": "wiki/ml/01A--valid-slug.md",
+                "reason": "balance",
+            }
+        ],
+        rationale="tax",
+    )
+    contra_res = ContradictionResult(
+        flags=[{"note_id": "01B", "conflicts_with": ["W1"], "note": "conflict"}],
+        schema_recs=[{"suggestion": "split", "rationale": "big"}],
+        rationale="contra",
+    )
+
+    mocker.patch("pal.engine.lint.complete", side_effect=[fold_res, tax_res, contra_res])
+
+    from pal.engine.lint import plan_lint
+
+    cs = plan_lint(brain_dir=tmp_brain)
+    assert len(cs.concepts) == 1
+    assert cs.concepts[0].slug == "my-concept"
+    assert len(cs.moves) == 1
+    assert cs.moves[0].id == "01A"
+    assert len(cs.flags) == 1
+    assert cs.flags[0].note_id == "01B"
+    assert len(cs.schema_recs) == 1
+    assert cs.partial_failures == []
+
+
+def test_plan_lint_partial_failure_moves_empty(tmp_brain: Path, mocker):
+    _seed_plan_candidates(tmp_brain)
+
+    from pal.agent.llm import LLMUnavailableError
+    from pal.agent.prompts import ContradictionResult, FoldingResult
+
+    fold_res = FoldingResult(
+        concepts=[
+            {
+                "topic": "ml",
+                "slug": "my-concept",
+                "title": "My Concept",
+                "body": "synthesis body",
+                "sources": ["01A", "01B", "01C"],
+            }
+        ],
+        rationale="fold",
+    )
+    contra_res = ContradictionResult(
+        flags=[{"note_id": "01C", "conflicts_with": [], "note": "flag note"}],
+        schema_recs=[{"suggestion": "improve", "rationale": "why"}],
+        rationale="contra",
+    )
+
+    mocker.patch(
+        "pal.engine.lint.complete",
+        side_effect=[fold_res, LLMUnavailableError("taxonomy down"), contra_res],
+    )
+
+    from pal.engine.lint import plan_lint
+
+    cs = plan_lint(brain_dir=tmp_brain)
+    # taxonomy failed => moves empty
+    assert cs.moves == []
+    # folding and contradiction still present, warning not crash
+    assert len(cs.concepts) == 1
+    assert len(cs.flags) == 1
+    assert cs.flags[0].note_id == "01C"
+    assert cs.partial_failures == ["taxonomy"]
+
+
+def test_plan_lint_partial_failure_middle_warns_not_crash(tmp_brain: Path, mocker, caplog):
+    _seed_plan_candidates(tmp_brain)
+
+    from pal.agent.llm import LLMUnavailableError
+    from pal.agent.prompts import ContradictionResult, FoldingResult
+
+    fold_res = FoldingResult(concepts=[], rationale="no fold")
+    contra_res = ContradictionResult(flags=[], schema_recs=[], rationale="no contra")
+
+    mocker.patch(
+        "pal.engine.lint.complete",
+        side_effect=[fold_res, LLMUnavailableError("taxonomy down"), contra_res],
+    )
+
+    from pal.engine.lint import plan_lint
+
+    caplog.set_level("WARNING")
+    cs = plan_lint(brain_dir=tmp_brain)
+    assert cs.moves == []
+    # should have logged taxonomy failure
+    assert any("taxonomy" in rec.message.lower() for rec in caplog.records)
+    assert cs.partial_failures == ["taxonomy"]
+
+
+def test_plan_lint_total_failure_empty_diff(tmp_brain: Path, mocker):
+    _seed_plan_candidates(tmp_brain)
+
+    from pal.agent.llm import LLMUnavailableError
+
+    mocker.patch(
+        "pal.engine.lint.complete",
+        side_effect=[
+            LLMUnavailableError("fold down"),
+            LLMUnavailableError("tax down"),
+            LLMUnavailableError("contra down"),
+        ],
+    )
+
+    from pal.engine.lint import plan_lint
+
+    cs = plan_lint(brain_dir=tmp_brain)
+    assert cs.moves == []
+    assert cs.concepts == []
+    assert cs.flags == []
+    assert cs.schema_recs == []
+    assert cs.partial_failures == ["folding", "taxonomy", "contradictions"]
+
+
+def test_plan_lint_total_failure_no_crash_and_no_write(tmp_brain: Path, mocker):
+    _seed_plan_candidates(tmp_brain)
+
+    from pal.agent.llm import LLMUnavailableError
+
+    mocker.patch(
+        "pal.engine.lint.complete",
+        side_effect=[
+            LLMUnavailableError("a"),
+            LLMUnavailableError("b"),
+            LLMUnavailableError("c"),
+        ],
+    )
+
+    from pal.engine.lint import plan_lint
+
+    cs = plan_lint(brain_dir=tmp_brain)
+    # empty diff, no exception
+    assert cs.model_dump() == {
+        "moves": [],
+        "concepts": [],
+        "flags": [],
+        "schema_recs": [],
+        "partial_failures": ["folding", "taxonomy", "contradictions"],
+    }
+
+
+def test_plan_lint_validate_integration_filters_invalid(tmp_brain: Path, mocker):
+    _seed_plan_candidates(tmp_brain)
+
+    from pal.agent.prompts import ContradictionResult, FoldingResult, TaxonomyResult
+
+    # folding returns one valid concept and one invalid (sources<3)
+    fold_res = FoldingResult(
+        concepts=[
+            {
+                "topic": "ml",
+                "slug": "valid-slug",
+                "title": "Valid",
+                "body": "valid body",
+                "sources": ["01A", "01B", "01C"],
+            },
+            {
+                "topic": "ml",
+                "slug": "bad-slug",
+                "title": "Bad",
+                "body": "bad body",
+                "sources": ["01A", "01B"],  # len 2 -> should be dropped by validate
+            },
+        ],
+        rationale="fold",
+    )
+    # taxonomy returns one valid move and one bad id
+    tax_res = TaxonomyResult(
+        moves=[
+            {
+                "id": "01A",
+                "from_path": "inbox/01A--a.md",
+                "to_class": None,
+                "to_path": "wiki/ml/01A--good-slug.md",
+                "reason": "good",
+            },
+            {
+                "id": "01ZZ",
+                "from_path": "inbox/01ZZ.md",
+                "to_class": None,
+                "to_path": "wiki/ml/01ZZ--bad.md",
+                "reason": "bad id",
+            },
+        ],
+        rationale="tax",
+    )
+    contra_res = ContradictionResult(
+        flags=[
+            {"note_id": "01B", "conflicts_with": [], "note": "good flag"},
+            {"note_id": "01ZZ", "conflicts_with": [], "note": "bad flag"},
+        ],
+        schema_recs=[{"suggestion": "s", "rationale": "r"}],
+        rationale="contra",
+    )
+
+    mocker.patch("pal.engine.lint.complete", side_effect=[fold_res, tax_res, contra_res])
+
+    from pal.engine.lint import plan_lint
+
+    cs = plan_lint(brain_dir=tmp_brain)
+    # validate should have filtered invalid
+    assert len(cs.concepts) == 1
+    assert cs.concepts[0].slug == "valid-slug"
+    assert len(cs.moves) == 1
+    assert cs.moves[0].id == "01A"
+    assert len(cs.flags) == 1
+    assert cs.flags[0].note_id == "01B"
+    # schema_recs pass through
+    assert len(cs.schema_recs) == 1
+
+
+def test_plan_lint_uses_lightweight_stub_dict_shapes(tmp_brain: Path, mocker):
+    """Ensure converters handle dict shapes (prompts lightweight stubs)."""
+    _seed_plan_candidates(tmp_brain)
+
+    # Return plain dicts mimicking LLM JSON parse via response_model, but via side_effect we return dict-like objects
+    # The converters in lint.py handle dict via model_validate, so we can patch to return dict wrappers
+    from pal.agent.prompts import FoldingResult as PromptFolding
+
+    fold = PromptFolding.model_validate(
+        {"concepts": [{"topic": "t", "slug": "s", "title": "T", "body": "body text", "sources": ["01A", "01B", "01C"]}], "rationale": ""}
+    )
+    tax = {"moves": [{"id": "01B", "from_path": "inbox/01B.md", "to_class": None, "to_path": "wiki/t/01B--s2.md", "reason": ""}], "rationale": ""}
+    contra = {"flags": [{"note_id": "01C", "conflicts_with": [], "note": "n"}], "schema_recs": [], "rationale": ""}
+
+    # Wrap tax/contra as simple objects with attributes to exercise both converters
+    class Obj:
+        def __init__(self, d):
+            for k, v in d.items():
+                setattr(self, k, v)
+
+    mocker.patch("pal.engine.lint.complete", side_effect=[fold, Obj(tax), Obj(contra)])
+
+    from pal.engine.lint import plan_lint
+
+    cs = plan_lint(brain_dir=tmp_brain)
+    assert len(cs.concepts) == 1
+    assert len(cs.moves) == 1
+    assert len(cs.flags) == 1
+
+
+def test_plan_lint_default_brain_dir_via_env(tmp_brain: Path, mocker):
+    # Seed via explicit path but call plan_lint() without arg to test BRAIN_DIR env resolution
+    _seed_plan_candidates(tmp_brain)
+    from pal.agent.llm import LLMUnavailableError
+
+    mocker.patch(
+        "pal.engine.lint.complete",
+        side_effect=[
+            LLMUnavailableError("a"),
+            LLMUnavailableError("b"),
+            LLMUnavailableError("c"),
+        ],
+    )
+    from pal.engine.lint import plan_lint
+
+    cs = plan_lint()  # uses BRAIN_DIR env
+    assert cs.moves == [] and cs.concepts == []

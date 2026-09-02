@@ -6,6 +6,15 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from pal.agent.llm import LLMUnavailableError, complete
+from pal.agent.prompts import (
+    ContradictionResult,
+    FoldingResult,
+    TaxonomyResult,
+    build_lint_contradiction_prompt,
+    build_lint_folding_prompt,
+    build_lint_taxonomy_prompt,
+)
 from pal.engine.errors import BrainNotInitializedError, NotImplementedPhaseError
 from pal.storage import git, schema
 from pal.storage.files import read_note
@@ -71,6 +80,7 @@ class LintChangeset(BaseModel):
     concepts: list[CreateConcept] = Field(default_factory=list)
     flags: list[FlagContradiction] = Field(default_factory=list)
     schema_recs: list[SchemaRec] = Field(default_factory=list)
+    partial_failures: list[str] = Field(default_factory=list)
 
 
 class LintResult(BaseModel):
@@ -400,7 +410,247 @@ def validate_changeset(
         concepts=valid_concepts,
         flags=valid_flags,
         schema_recs=valid_schema,
+        partial_failures=list(cs.partial_failures),
     )
+
+
+# ---------------------------------------------------------------------------
+# Helpers for plan_lint
+# ---------------------------------------------------------------------------
+
+
+def _read_file_safe(path: Path) -> str:
+    try:
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+    except Exception as exc:  # pragma: no cover
+        logger.warning("lint: cannot read %s: %s", path, exc)
+    return ""
+
+
+def _layout_stats(cands: list[Candidate]) -> dict[str, int]:
+    stats: dict[str, int] = {}
+    for c in cands:
+        if c.classified_into:
+            key = c.classified_into
+        elif c.tags:
+            key = c.tags[0]
+        else:
+            key = "inbox"
+        stats[key] = stats.get(key, 0) + 1
+    return stats
+
+
+def _folding_preview(concepts: list[CreateConcept]) -> dict[str, int]:
+    preview: dict[str, int] = {}
+    for cc in concepts:
+        topic = cc.topic or "untitled"
+        preview[topic] = preview.get(topic, 0) + 1
+    return preview
+
+
+def _collect_wiki_snippets(
+    brain_root: Path, limit: int = 5, snippet_len: int = 600
+) -> list[dict]:
+    """Collect up to `limit` wiki snippets sorted by path for stability."""
+    wiki_root = brain_root / "wiki"
+    if not wiki_root.is_dir():
+        return []
+    snippets: list[dict] = []
+    try:
+        paths = sorted(wiki_root.rglob("*.md"))
+    except Exception:  # pragma: no cover
+        paths = []
+    for p in paths[:limit]:
+        try:
+            fm, body = read_note(p)
+        except Exception as exc:
+            logger.warning("lint: skip wiki unreadable %s: %s", p, exc)
+            continue
+        nid = str(fm.get("id") or "")
+        title = str(fm.get("title") or "")
+        # body truncated to snippet_len
+        text = (body or "").strip()[:snippet_len].replace("\n", " ")
+        snippets.append({"id": nid, "title": title, "body": text})
+    return snippets
+
+
+def _to_engine_concepts(raw: list) -> list[CreateConcept]:
+    out: list[CreateConcept] = []
+    for rc in raw or []:
+        try:
+            if isinstance(rc, dict):
+                out.append(CreateConcept.model_validate(rc))
+            elif isinstance(rc, CreateConcept):
+                out.append(rc)
+            elif hasattr(rc, "model_dump"):
+                out.append(CreateConcept.model_validate(rc.model_dump()))
+            else:
+                out.append(
+                    CreateConcept(
+                        topic=str(getattr(rc, "topic", "")),
+                        slug=str(getattr(rc, "slug", "")),
+                        title=str(getattr(rc, "title", "")),
+                        body=str(getattr(rc, "body", "")),
+                        sources=list(getattr(rc, "sources", []) or []),
+                    )
+                )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("lint folding: skip invalid concept %s: %s", rc, exc)
+    return out
+
+
+def _to_engine_moves(raw: list) -> list[Move]:
+    out: list[Move] = []
+    for rm in raw or []:
+        try:
+            if isinstance(rm, dict):
+                out.append(Move.model_validate(rm))
+            elif isinstance(rm, Move):
+                out.append(rm)
+            elif hasattr(rm, "model_dump"):
+                out.append(Move.model_validate(rm.model_dump()))
+            else:
+                out.append(
+                    Move(
+                        id=str(getattr(rm, "id", "")),
+                        from_path=str(getattr(rm, "from_path", "")),
+                        to_class=getattr(rm, "to_class", None),
+                        to_path=str(getattr(rm, "to_path", "")),
+                        reason=str(getattr(rm, "reason", "")),
+                    )
+                )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("lint taxonomy: skip invalid move %s: %s", rm, exc)
+    return out
+
+
+def _to_engine_flags(raw: list) -> list[FlagContradiction]:
+    out: list[FlagContradiction] = []
+    for rf in raw or []:
+        try:
+            if isinstance(rf, dict):
+                out.append(FlagContradiction.model_validate(rf))
+            elif isinstance(rf, FlagContradiction):
+                out.append(rf)
+            elif hasattr(rf, "model_dump"):
+                out.append(FlagContradiction.model_validate(rf.model_dump()))
+            else:
+                out.append(
+                    FlagContradiction(
+                        note_id=str(getattr(rf, "note_id", "")),
+                        conflicts_with=list(getattr(rf, "conflicts_with", []) or []),
+                        note=str(getattr(rf, "note", "")),
+                    )
+                )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("lint contradiction: skip invalid flag %s: %s", rf, exc)
+    return out
+
+
+def _to_engine_schema_recs(raw: list) -> list[SchemaRec]:
+    out: list[SchemaRec] = []
+    for rs in raw or []:
+        try:
+            if isinstance(rs, dict):
+                out.append(SchemaRec.model_validate(rs))
+            elif isinstance(rs, SchemaRec):
+                out.append(rs)
+            elif hasattr(rs, "model_dump"):
+                out.append(SchemaRec.model_validate(rs.model_dump()))
+            else:
+                out.append(
+                    SchemaRec(
+                        suggestion=str(getattr(rs, "suggestion", "")),
+                        rationale=str(getattr(rs, "rationale", "")),
+                    )
+                )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("lint contradiction: skip invalid schema_rec %s: %s", rs, exc)
+    return out
+
+
+def plan_lint(brain_dir: Path | None = None) -> LintChangeset:
+    """Plan a lint pass (no writes).
+
+    1. collect_candidates + group_for_folding
+    2. 3 sequential LLM calls (folding, taxonomy, contradiction+schema)
+       each wrapped in ``try/except LLMUnavailableError`` — partial failures
+       keep successful sub-results and log a warning.
+    3. ``validate_changeset`` the aggregated result.
+    """
+    cands = collect_candidates(brain_dir)
+    groups = group_for_folding(cands)
+
+    resolved = _resolve_brain_dir(brain_dir)
+    schema_md = _read_file_safe(resolved / "SCHEMA.md")
+    index_md = _read_file_safe(resolved / "INDEX.md")
+
+    layout_stats = _layout_stats(cands)
+    wiki_snippets = _collect_wiki_snippets(resolved, limit=5)
+    candidates_slice = cands[:10]
+
+    cs = LintChangeset()
+    partial_failures: list[str] = []
+    folding_preview: dict[str, int] = {}
+
+    # Call 1 — folding
+    try:
+        folding = complete(
+            build_lint_folding_prompt(schema_md, index_md, groups),
+            response_model=FoldingResult,
+        )
+        cs.concepts = _to_engine_concepts(getattr(folding, "concepts", []))
+        folding_preview = _folding_preview(cs.concepts)
+    except LLMUnavailableError as exc:
+        logger.warning("lint plan: folding failed partial_failure=folding: %s", exc)
+        partial_failures.append("folding")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("lint plan: folding unexpected error partial_failure=folding: %s", exc)
+        partial_failures.append("folding")
+
+    # Call 2 — taxonomy
+    try:
+        taxonomy = complete(
+            build_lint_taxonomy_prompt(
+                schema_md, index_md, layout_stats, folding_preview
+            ),
+            response_model=TaxonomyResult,
+        )
+        cs.moves = _to_engine_moves(getattr(taxonomy, "moves", []))
+    except LLMUnavailableError as exc:
+        logger.warning("lint plan: taxonomy failed partial_failure=taxonomy: %s", exc)
+        partial_failures.append("taxonomy")
+    except Exception as exc:  # pragma: no cover
+        logger.warning("lint plan: taxonomy unexpected error partial_failure=taxonomy: %s", exc)
+        partial_failures.append("taxonomy")
+
+    # Call 3 — contradiction + schema
+    try:
+        contra = complete(
+            build_lint_contradiction_prompt(
+                schema_md, wiki_snippets, candidates_slice
+            ),
+            response_model=ContradictionResult,
+        )
+        cs.flags = _to_engine_flags(getattr(contra, "flags", []))
+        cs.schema_recs = _to_engine_schema_recs(
+            getattr(contra, "schema_recs", [])
+        )
+    except LLMUnavailableError as exc:
+        logger.warning(
+            "lint plan: contradiction failed partial_failure=contradiction: %s", exc
+        )
+        partial_failures.append("contradictions")
+    except Exception as exc:  # pragma: no cover
+        logger.warning(
+            "lint plan: contradiction unexpected error partial_failure=contradiction: %s",
+            exc,
+        )
+        partial_failures.append("contradictions")
+
+    cs.partial_failures = partial_failures
+    return validate_changeset(cs, cands, brain_dir)
 
 
 def run_lint(*args, **kwargs) -> None:  # type: ignore[no-untyped-def]
