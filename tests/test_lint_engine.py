@@ -922,3 +922,438 @@ def test_plan_lint_default_brain_dir_via_env(tmp_brain: Path, mocker):
 
     cs = plan_lint()  # uses BRAIN_DIR env
     assert cs.moves == [] and cs.concepts == []
+
+
+# ---------------------------------------------------------------------------
+# Phase C — render_diff / render_diff_text / apply_changeset
+# ---------------------------------------------------------------------------
+
+import json
+import re
+import subprocess
+from datetime import datetime, timezone
+
+from pal.engine.lint import apply_changeset, render_diff, render_diff_text
+from pal.storage.files import read_note
+
+
+def _git_commit_count(brain: Path) -> int:
+    res = subprocess.run(
+        ["git", "rev-list", "--count", "HEAD"],
+        cwd=str(brain),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if res.returncode != 0:
+        return 0
+    return int(res.stdout.strip() or "0")
+
+
+def _git_head_message(brain: Path) -> str:
+    res = subprocess.run(
+        ["git", "log", "-1", "--pretty=%B"],
+        cwd=str(brain),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return res.stdout.strip() if res.returncode == 0 else ""
+
+
+def _git_status_porcelain(brain: Path) -> str:
+    res = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=str(brain),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return res.stdout.strip() if res.returncode == 0 else ""
+
+
+def _seed_index_entry(brain: Path, note_id: str, title: str, classified_into: str | None, rel: str):
+    # Append a single INDEX line matching expected format
+    klass = (classified_into or "inbox").strip().strip("/") or "inbox"
+    line = f"- `{note_id}` `{klass}` {title} → {rel}\n"
+    idx = brain / "INDEX.md"
+    existing = idx.read_text(encoding="utf-8") if idx.exists() else ""
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    # use atomic write via storage helper to keep fsync semantics
+    from pal.storage.files import write_atomic
+
+    write_atomic(idx, existing + line)
+
+
+def _commit_all(brain: Path, msg: str = "seed: test setup") -> None:
+    subprocess.run(["git", "add", "--all"], cwd=str(brain), capture_output=True, text=True, encoding="utf-8", check=True)
+    # only commit if there is something to commit
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=str(brain), capture_output=True, text=True, encoding="utf-8")
+    if status.stdout.strip():
+        subprocess.run(["git", "commit", "-m", msg], cwd=str(brain), capture_output=True, text=True, encoding="utf-8", check=True)
+
+
+# -- render_diff -----------------------------------------------------------
+
+def test_render_diff_move_format():
+    cs = LintChangeset(
+        moves=[Move(id="01A", from_path="inbox/01A--a.md", to_path="wiki/topic/01A--a.md", to_class="topic", reason="reclassify")],
+    )
+    out = render_diff(cs)
+    # per Move "— old → new"
+    assert "— inbox/01A--a.md → wiki/topic/01A--a.md" in out
+    # classified_into arrow line
+    assert "classified_into:" in out
+    assert "→ topic" in out
+    assert "reason: reclassify" in out
+    # render_diff_text identical
+    assert render_diff_text(cs) == out
+
+
+def test_render_diff_move_inbox_fallback():
+    cs = LintChangeset(
+        moves=[Move(id="01A", from_path="inbox/01A--a.md", to_path="wiki/topic/01A--a.md", to_class=None, reason="")],
+    )
+    out = render_diff(cs)
+    assert "— inbox/01A--a.md → wiki/topic/01A--a.md" in out
+    assert "→ inbox" in out
+
+
+def test_render_diff_concept_format():
+    cs = LintChangeset(
+        concepts=[CreateConcept(topic="ml", slug="my-slug", title="My Title", body="Hello world body text for preview", sources=["01A", "01B", "01C"])],
+    )
+    out = render_diff(cs)
+    # per Concept "+ wiki/... sources:"
+    assert "+ wiki/ml/my-slug.md (sources: 01A,01B,01C)" in out
+    # body preview present
+    assert "Hello world body text" in out
+
+
+def test_render_diff_concept_sanitized_topic_and_slug():
+    cs = LintChangeset(
+        concepts=[CreateConcept(topic="HELLO WORLD!!", slug="My Bad Slug!", title="T", body="body", sources=["01A", "01B", "01C"])],
+    )
+    out = render_diff(cs)
+    # topic and slug are sanitized in render
+    assert "+ wiki/hello-world/my-bad-slug.md" in out
+
+
+def test_render_diff_flag_format():
+    cs = LintChangeset(
+        flags=[
+            FlagContradiction(note_id="01A", conflicts_with=["01B", "01C"], note="conflict note"),
+            FlagContradiction(note_id="01D", conflicts_with=[], note="solo"),
+        ],
+    )
+    out = render_diff(cs)
+    # per Flag "⚠"
+    assert "⚠ 01A conflicts with 01B, 01C: conflict note" in out
+    assert "⚠ 01D: solo" in out
+
+
+def test_render_diff_schema_rec_format():
+    from pal.engine.lint import SchemaRec
+
+    cs = LintChangeset(schema_recs=[SchemaRec(suggestion="split marketing", rationale="too big")])
+    out = render_diff(cs)
+    assert "💡 suggestion: split marketing — too big" in out
+
+
+def test_render_diff_footer_summary():
+    from pal.engine.lint import SchemaRec
+
+    cs = LintChangeset(
+        moves=[Move(id="01A", from_path="a", to_path="b", reason="")],
+        concepts=[CreateConcept(topic="t", slug="s", title="T", body="body", sources=["01A", "01B", "01C"])],
+        flags=[FlagContradiction(note_id="01A", conflicts_with=[], note="n")],
+        schema_recs=[SchemaRec(suggestion="s", rationale="r"), SchemaRec(suggestion="s2", rationale="r2")],
+    )
+    out = render_diff(cs)
+    # footer Summary Xm/Yc/Zf/Wr  (r for schema_recs)
+    assert "Summary: 1m/1c/1f/2r" in out
+    # also ensure render_diff_text same footer
+    assert "Summary: 1m/1c/1f/2r" in render_diff_text(cs)
+
+
+def test_render_diff_footer_partial_failure_warn():
+    from pal.engine.lint import SchemaRec
+
+    cs = LintChangeset(
+        moves=[],
+        concepts=[],
+        flags=[],
+        schema_recs=[],
+        partial_failures=["folding", "taxonomy"],
+    )
+    out = render_diff(cs)
+    assert "Summary: 0m/0c/0f/0r" in out
+    assert "⚠ partial_failure:" in out
+    assert "folding, taxonomy" in out
+
+
+def test_render_diff_summary_zero_and_no_partial():
+    cs = LintChangeset()
+    out = render_diff(cs)
+    assert "Summary: 0m/0c/0f/0r" in out
+    assert "partial_failure" not in out
+
+
+# -- apply_changeset dry_run ----------------------------------------------
+
+def test_apply_changeset_dry_run_no_writes_no_commit(tmp_brain: Path):
+    schema.ensure_brain_initialized()
+    # seed two notes + INDEX
+    _write_fm_note(tmp_brain / "inbox" / "01A--a.md", id="01A", title="Alpha", created="2026-01-01T00:00:00Z", body="body A")
+    _write_fm_note(tmp_brain / "inbox" / "01B--b.md", id="01B", title="Beta", created="2026-01-02T00:00:00Z", body="body B")
+    _write_fm_note(tmp_brain / "inbox" / "01C--c.md", id="01C", title="Gamma", created="2026-01-03T00:00:00Z", body="body C")
+    _seed_index_entry(tmp_brain, "01A", "Alpha", None, "inbox/01A--a.md")
+    _seed_index_entry(tmp_brain, "01B", "Beta", None, "inbox/01B--b.md")
+    _seed_index_entry(tmp_brain, "01C", "Gamma", None, "inbox/01C--c.md")
+    _commit_all(tmp_brain)
+    # capture state
+    index_before = (tmp_brain / "INDEX.md").read_text(encoding="utf-8")
+    log_before = (tmp_brain / "LOG.md").read_text(encoding="utf-8")
+    count_before = _git_commit_count(tmp_brain)
+    assert count_before == 2  # init + seed commit
+
+    cs = LintChangeset(
+        moves=[Move(id="01A", from_path="inbox/01A--a.md", to_path="wiki/topic/01A--a.md", to_class="topic", reason="test")],
+        concepts=[CreateConcept(topic="ml", slug="my-concept", title="My Concept", body="synthesis body", sources=["01A", "01B", "01C"])],
+    )
+    result = apply_changeset(cs, dry_run=True, brain_dir=tmp_brain)
+
+    assert result.applied is False
+    assert result.commit_hash is None
+    # no writes
+    assert (tmp_brain / "INDEX.md").read_text(encoding="utf-8") == index_before
+    assert (tmp_brain / "LOG.md").read_text(encoding="utf-8") == log_before
+    assert not (tmp_brain / "wiki" / "ml").exists()
+    assert not (tmp_brain / "wiki" / "topic" / "01A--a.md").exists()
+    assert (tmp_brain / "inbox" / "01A--a.md").exists()
+    assert _git_commit_count(tmp_brain) == count_before
+    assert _git_status_porcelain(tmp_brain) == ""
+
+
+# -- apply_changeset auto --------------------------------------------------
+
+def test_apply_changeset_auto_moves_and_concepts(tmp_brain: Path):
+    schema.ensure_brain_initialized()
+    _write_fm_note(tmp_brain / "inbox" / "01A--alpha.md", id="01A", title="Alpha", created="2026-01-01T00:00:00Z", body="alpha body")
+    _write_fm_note(tmp_brain / "inbox" / "01B--beta.md", id="01B", title="Beta", created="2026-01-02T00:00:00Z", body="beta body")
+    _write_fm_note(tmp_brain / "inbox" / "01C--gamma.md", id="01C", title="Gamma", created="2026-01-03T00:00:00Z", body="gamma body")
+    _seed_index_entry(tmp_brain, "01A", "Alpha", None, "inbox/01A--alpha.md")
+    _seed_index_entry(tmp_brain, "01B", "Beta", None, "inbox/01B--beta.md")
+    _seed_index_entry(tmp_brain, "01C", "Gamma", None, "inbox/01C--gamma.md")
+    _commit_all(tmp_brain)
+    log_before = (tmp_brain / "LOG.md").read_text(encoding="utf-8")
+    count_before = _git_commit_count(tmp_brain)
+
+    cs = LintChangeset(
+        moves=[Move(id="01A", from_path="inbox/01A--alpha.md", to_path="wiki/topic/01A--alpha.md", to_class="topic", reason="reclassify")],
+        concepts=[CreateConcept(topic="my-topic", slug="my-concept", title="My Concept", body="This is a synthesized concept body with enough content.", sources=["01A", "01B", "01C"])],
+    )
+    result = apply_changeset(cs, brain_dir=tmp_brain)
+
+    assert result.applied is True
+    assert result.commit_hash is not None
+    assert re.match(r"^[0-9a-f]{40}$", result.commit_hash)
+    # single commit
+    assert _git_commit_count(tmp_brain) == count_before + 1
+    # commit message matches isocalendar
+    iso_y, iso_w, _ = datetime.now(timezone.utc).isocalendar()
+    expected_msg = f"lint: weekly review {iso_y}-W{iso_w:02d}"
+    assert _git_head_message(tmp_brain) == expected_msg
+
+    # moves applied: src unlinked, dest exists with updated classified_into
+    assert not (tmp_brain / "inbox" / "01A--alpha.md").exists()
+    dest = tmp_brain / "wiki" / "topic" / "01A--alpha.md"
+    assert dest.is_file()
+    fm, body = read_note(dest)
+    assert fm["id"] == "01A"
+    assert fm["classified_into"] == "topic"
+    assert body.strip() == "alpha body"
+
+    # INDEX updated via update_index_move
+    index_text = (tmp_brain / "INDEX.md").read_text(encoding="utf-8")
+    assert "`01A` `topic` Alpha → wiki/topic/01A--alpha.md" in index_text
+
+    # concepts created via wiki_path_for, sources≥3, INDEX appended
+    wiki_dir = tmp_brain / "wiki" / "my-topic"
+    assert wiki_dir.is_dir()
+    matches = list(wiki_dir.glob("*--my-concept.md"))
+    assert len(matches) == 1
+    c_dest = matches[0]
+    c_fm, c_body = read_note(c_dest)
+    assert c_fm["title"] == "My Concept"
+    assert c_fm["classified_into"] == "my-topic"
+    assert len(c_fm["sources"]) >= 3
+    assert set(c_fm["sources"]) == {"01A", "01B", "01C"}
+    assert c_body.strip() == "This is a synthesized concept body with enough content."
+    # INDEX appended for new concept
+    assert f"`{c_fm['id']}` `my-topic` My Concept → wiki/my-topic/{c_dest.name}" in index_text
+
+    # LOG appended with lint entry, single commit already verified, LOG contains json with moves/concepts
+    log_after = (tmp_brain / "LOG.md").read_text(encoding="utf-8")
+    assert len(log_after) > len(log_before)
+    # last lint line contains payload
+    assert "`lint`" in log_after
+    # ensure the new line's json contains our move and concept
+    lint_lines = [l for l in log_after.splitlines() if "`lint`" in l]
+    assert len(lint_lines) >= 1
+    last = lint_lines[-1]
+    assert "01A" in last
+    assert "my-concept" in last or "My Concept" in last
+    # git status clean after successful commit
+    assert _git_status_porcelain(tmp_brain) == ""
+
+
+def test_apply_changeset_single_commit_multiple_moves_concepts(tmp_brain: Path):
+    schema.ensure_brain_initialized()
+    for nid, title in [("01A", "Alpha"), ("01B", "Beta"), ("01C", "Gamma"), ("01D", "Delta")]:
+        _write_fm_note(tmp_brain / "inbox" / f"{nid}--{nid.lower()}.md", id=nid, title=title, created=f"2026-01-0{nid[-1]}T00:00:00Z", body=f"body {nid}")
+        _seed_index_entry(tmp_brain, nid, title, None, f"inbox/{nid}--{nid.lower()}.md")
+    _commit_all(tmp_brain)
+    count_before = _git_commit_count(tmp_brain)
+    cs = LintChangeset(
+        moves=[
+            Move(id="01A", from_path="inbox/01A--01a.md", to_path="wiki/t1/01A--01a.md", to_class="t1", reason="r1"),
+            Move(id="01B", from_path="inbox/01B--01b.md", to_path="wiki/t2/01B--01b.md", to_class="t2", reason="r2"),
+        ],
+        concepts=[
+            CreateConcept(topic="topic-a", slug="concept-a", title="Concept A", body="body A content", sources=["01A", "01B", "01C"]),
+            CreateConcept(topic="topic-b", slug="concept-b", title="Concept B", body="body B content", sources=["01B", "01C", "01D"]),
+        ],
+    )
+    result = apply_changeset(cs, brain_dir=tmp_brain)
+    assert result.applied is True
+    # ensure single commit even with multiple moves+concepts
+    assert _git_commit_count(tmp_brain) == count_before + 1
+    # all moves applied
+    assert not (tmp_brain / "inbox" / "01A--01a.md").exists()
+    assert not (tmp_brain / "inbox" / "01B--01b.md").exists()
+    assert (tmp_brain / "wiki" / "t1" / "01A--01a.md").exists()
+    assert (tmp_brain / "wiki" / "t2" / "01B--01b.md").exists()
+    # both concepts created
+    assert len(list((tmp_brain / "wiki" / "topic-a").glob("*--concept-a.md"))) == 1
+    assert len(list((tmp_brain / "wiki" / "topic-b").glob("*--concept-b.md"))) == 1
+    assert _git_status_porcelain(tmp_brain) == ""
+
+
+def test_apply_changeset_dirty_on_failure(tmp_brain: Path, monkeypatch):
+    schema.ensure_brain_initialized()
+    _write_fm_note(tmp_brain / "inbox" / "01A--a.md", id="01A", title="Alpha", body="body A")
+    _write_fm_note(tmp_brain / "inbox" / "01B--b.md", id="01B", title="Beta", body="body B")
+    _write_fm_note(tmp_brain / "inbox" / "01C--c.md", id="01C", title="Gamma", body="body C")
+    _seed_index_entry(tmp_brain, "01A", "Alpha", None, "inbox/01A--a.md")
+    _seed_index_entry(tmp_brain, "01B", "Beta", None, "inbox/01B--b.md")
+    _seed_index_entry(tmp_brain, "01C", "Gamma", None, "inbox/01C--c.md")
+    _commit_all(tmp_brain)
+    log_before = (tmp_brain / "LOG.md").read_text(encoding="utf-8")
+    count_before = _git_commit_count(tmp_brain)
+
+    import pal.engine.lint as lint_mod
+
+    orig_write = lint_mod.write_note
+    calls = {"n": 0}
+
+    def fake_write(path: Path, fm: dict, body: str):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("injected failure on second write_note")
+        return orig_write(path, fm, body)
+
+    monkeypatch.setattr(lint_mod, "write_note", fake_write)
+
+    cs = LintChangeset(
+        moves=[
+            Move(id="01A", from_path="inbox/01A--a.md", to_path="wiki/t1/01A--a.md", to_class="t1", reason="r1"),
+            Move(id="01B", from_path="inbox/01B--b.md", to_path="wiki/t2/01B--b.md", to_class="t2", reason="r2"),
+        ],
+    )
+    with pytest.raises(OSError, match="injected failure"):
+        apply_changeset(cs, brain_dir=tmp_brain)
+
+    # LOG not appended
+    assert (tmp_brain / "LOG.md").read_text(encoding="utf-8") == log_before
+    # no new commit
+    assert _git_commit_count(tmp_brain) == count_before
+    # git status dirty
+    assert _git_status_porcelain(tmp_brain) != ""
+    # first move file may exist (leave dirty) — but src may be deleted and dest created
+    # we assert first dest exists to prove partial write left dirty
+    assert (tmp_brain / "wiki" / "t1" / "01A--a.md").exists()
+    # second move dest should NOT exist because it failed
+    assert not (tmp_brain / "wiki" / "t2" / "01B--b.md").exists()
+
+
+def test_apply_concept_sources_ge_3_validation(tmp_brain: Path):
+    schema.ensure_brain_initialized()
+    cands = _candidates(["01A", "01B", "01C"])
+    # concept with sources len<3 should be dropped in validate
+    cs_invalid = LintChangeset(concepts=[CreateConcept(topic="ml", slug="s", title="T", body="body", sources=["01A", "01B"])])
+    out = validate_changeset(cs_invalid, cands, brain_dir=tmp_brain)
+    assert out.concepts == []
+    # valid with 3 passes
+    cs_valid = LintChangeset(concepts=[CreateConcept(topic="ml", slug="s2", title="T", body="body", sources=["01A", "01B", "01C"])])
+    out2 = validate_changeset(cs_valid, cands, brain_dir=tmp_brain)
+    assert len(out2.concepts) == 1
+
+    # also ensure apply creates concept with sources≥3
+    # reset inbox for apply part (clear previous candidates body's files if any) - re-seed cleanly
+    # remove prior inbox files that may have been left from earlier validate-only checks (none written) - just ensure files exist
+    # ensure any existing seed is committed first so apply's commit is clean
+    # clean up any leftover wiki/t from earlier concepts in this brain
+    # NOTE: brain already has some state; we re-use it and commit seeds before apply
+    _write_fm_note(tmp_brain / "inbox" / "01A--a.md", id="01A", title="Alpha", body="body A")
+    _write_fm_note(tmp_brain / "inbox" / "01B--b.md", id="01B", title="Beta", body="body B")
+    _write_fm_note(tmp_brain / "inbox" / "01C--c.md", id="01C", title="Gamma", body="body C")
+    _seed_index_entry(tmp_brain, "01A", "Alpha", None, "inbox/01A--a.md")
+    _seed_index_entry(tmp_brain, "01B", "Beta", None, "inbox/01B--b.md")
+    _seed_index_entry(tmp_brain, "01C", "Gamma", None, "inbox/01C--c.md")
+    _commit_all(tmp_brain)
+    cs = LintChangeset(concepts=[CreateConcept(topic="t", slug="valid-slug", title="Valid", body="valid body", sources=["01A", "01B", "01C"])])
+    # validate first (simulating plan_lint flow) then apply
+    validated = validate_changeset(cs, _candidates(["01A", "01B", "01C"]), brain_dir=tmp_brain)
+    assert len(validated.concepts) == 1
+    result = apply_changeset(validated, brain_dir=tmp_brain)
+    assert result.applied is True
+    matches = list((tmp_brain / "wiki" / "t").glob("*--valid-slug.md"))
+    assert len(matches) == 1
+    fm, _ = read_note(matches[0])
+    assert len(fm["sources"]) >= 3
+
+
+def test_apply_changeset_explicit_brain_dir_param(tmp_brain: Path, tmp_path: Path, monkeypatch):
+    # Ensure explicit brain_dir param hermetic isolation still works for apply
+    from pal.config import reset_settings_cache
+
+    # tmp_brain already is brain1 via fixture
+    schema.ensure_brain_initialized()
+    _write_fm_note(tmp_brain / "inbox" / "01A--a.md", id="01A", title="Alpha", body="body A")
+    _write_fm_note(tmp_brain / "inbox" / "01B--b.md", id="01B", title="Beta", body="body B")
+    _write_fm_note(tmp_brain / "inbox" / "01C--c.md", id="01C", title="Gamma", body="body C")
+    _seed_index_entry(tmp_brain, "01A", "Alpha", None, "inbox/01A--a.md")
+    _seed_index_entry(tmp_brain, "01B", "Beta", None, "inbox/01B--b.md")
+    _seed_index_entry(tmp_brain, "01C", "Gamma", None, "inbox/01C--c.md")
+    _commit_all(tmp_brain)
+
+    # create a second brain that should remain untouched
+    brain2 = tmp_path / "brain2"
+    monkeypatch.setenv("BRAIN_DIR", str(brain2))
+    reset_settings_cache()
+    schema.ensure_brain_initialized()
+    count2_before = _git_commit_count(brain2)
+
+    # apply explicitly to brain1 while BRAIN_DIR points to brain2
+    cs = LintChangeset(moves=[Move(id="01A", from_path="inbox/01A--a.md", to_path="wiki/t/01A--a.md", to_class="t", reason="")])
+    result = apply_changeset(cs, brain_dir=tmp_brain)
+    assert result.applied is True
+    # brain2 unchanged
+    assert _git_commit_count(brain2) == count2_before
+    assert not (brain2 / "wiki" / "t" / "01A--a.md").exists()
+    # brain1 changed
+    assert (tmp_brain / "wiki" / "t" / "01A--a.md").exists()
+    reset_settings_cache()
+

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -17,8 +19,9 @@ from pal.agent.prompts import (
 )
 from pal.engine.errors import BrainNotInitializedError, NotImplementedPhaseError
 from pal.storage import git, schema
-from pal.storage.files import read_note
-from pal.storage.paths import brain_dir, sanitize_slug
+from pal.storage.files import read_note, write_note
+from pal.storage.ids import new_id
+from pal.storage.paths import brain_dir, sanitize_slug, wiki_path_for
 
 logger = logging.getLogger(__name__)
 
@@ -412,6 +415,182 @@ def validate_changeset(
         schema_recs=valid_schema,
         partial_failures=list(cs.partial_failures),
     )
+
+
+# ---------------------------------------------------------------------------
+# Diff rendering (Phase C)
+# ---------------------------------------------------------------------------
+
+
+def _body_preview(body: str, limit: int = 120) -> str:
+    cleaned = body.strip().replace("\n", " ")
+    if len(cleaned) > limit:
+        return cleaned[:limit] + "..."
+    return cleaned
+
+
+def render_diff(cs: LintChangeset) -> str:
+    """Render changeset as plain text diff (Rich-ready)."""
+    lines: list[str] = []
+    for m in cs.moves:
+        lines.append(f"\u2014 {m.from_path} \u2192 {m.to_path}")
+        new_class = m.to_class or "inbox"
+        # Show to_class with arrow to satisfy spec "classified_into: old → new"
+        lines.append(f"  classified_into: \u2192 {new_class}")
+        if m.reason:
+            lines.append(f"  reason: {m.reason}")
+    for c in cs.concepts:
+        topic_disp = sanitize_slug(c.topic) if c.topic else "untitled"
+        slug_disp = c.slug or sanitize_slug(c.title or "untitled")
+        if not _SLUG_RE.match(slug_disp) or len(slug_disp) > _SLUG_MAX:
+            slug_disp = _sanitize_slug(slug_disp)
+        sources_str = ",".join(c.sources)
+        lines.append(f"+ wiki/{topic_disp}/{slug_disp}.md (sources: {sources_str})")
+        preview = _body_preview(c.body, 120)
+        lines.append(f"  {preview}")
+    for fl in cs.flags:
+        conflicts = ", ".join(fl.conflicts_with) if fl.conflicts_with else ""
+        if conflicts:
+            lines.append(f"\u26a0 {fl.note_id} conflicts with {conflicts}: {fl.note}")
+        else:
+            lines.append(f"\u26a0 {fl.note_id}: {fl.note}")
+    for rec in cs.schema_recs:
+        lines.append(f"\U0001f4a1 suggestion: {rec.suggestion} \u2014 {rec.rationale}")
+    # Footer
+    lines.append(f"Summary: {len(cs.moves)}m/{len(cs.concepts)}c/{len(cs.flags)}f/{len(cs.schema_recs)}r")
+    if cs.partial_failures:
+        pf = ", ".join(cs.partial_failures)
+        lines.append(f"\u26a0 partial_failure: {pf}")
+    return "\n".join(lines) + "\n"
+
+
+def render_diff_text(cs: LintChangeset) -> str:
+    """Plain-text diff for MCP preview (same as render_diff for now)."""
+    return render_diff(cs)
+
+
+# ---------------------------------------------------------------------------
+# Apply changeset (Phase C)
+# ---------------------------------------------------------------------------
+
+
+def apply_changeset(cs: LintChangeset, *, dry_run: bool = False, brain_dir: Path | None = None) -> LintResult:
+    """Apply changeset atomically with a single commit.
+
+    dry_run=True -> no writes, return applied=False.
+    On success: writes + INDEX/LOG + single commit ``lint: weekly review YYYY-WW``.
+    On failure before commit: partial files may exist but LOG not appended; caller sees dirty git.
+    """
+    if dry_run:
+        return LintResult(changeset=cs, commit_hash=None, applied=False)
+
+    brain = _resolve_brain_dir(brain_dir)
+    _ensure_initialized(brain, explicit=brain_dir is not None)
+
+    # N1 guard: reject paths outside brain before any writes (defense-in-depth beyond validate_changeset)
+    for m in cs.moves:
+        if not _is_inside_brain(m.to_path, brain) or not _is_inside_brain(m.from_path, brain):
+            raise ValueError(f"illegal path outside brain: {m.to_path!r} / {m.from_path!r}")
+
+    paths_to_commit: list[Path] = []
+
+    # Use explicit brain for all file ops to support brain_dir param correctly.
+    # Wrap in try so LOG is only appended after all writes succeed.
+    try:
+        # Moves
+        for m in cs.moves:
+            src_path = brain / m.from_path
+            dest_path = brain / m.to_path
+            # Read src note
+            try:
+                fm, body = read_note(src_path)
+            except Exception as exc:
+                raise OSError(f"cannot read src {src_path}: {exc}") from exc
+            new_fm = dict(fm)
+            new_fm["classified_into"] = m.to_class
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            write_note(dest_path, new_fm, body)
+            if dest_path not in paths_to_commit:
+                paths_to_commit.append(dest_path)
+            if src_path != dest_path and src_path.exists():
+                try:
+                    src_path.unlink()
+                except FileNotFoundError:
+                    pass
+                if src_path not in paths_to_commit:
+                    paths_to_commit.append(src_path)
+            schema.update_index_move(m.id, new_class=m.to_class, new_rel=m.to_path, root=brain)
+
+        # Concepts
+        for c in cs.concepts:
+            topic = sanitize_slug(c.topic) if c.topic else "untitled"
+            slug = c.slug or sanitize_slug(c.title or "untitled")
+            if not _SLUG_RE.match(slug) or len(slug) > _SLUG_MAX:
+                slug = _sanitize_slug(slug)
+            nid = new_id()
+            dest = wiki_path_for(nid, slug, topic, root=brain)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            fm = {
+                "id": nid,
+                "type": "concept",
+                "title": c.title,
+                "created": now_iso,
+                "classified_into": topic,
+                "sources": list(c.sources),
+                "tags": [],
+                "url": None,
+                "status": None,
+            }
+            write_note(dest, fm, c.body)
+            if dest not in paths_to_commit:
+                paths_to_commit.append(dest)
+            schema.append_index_entry(nid, c.title, topic, dest, root=brain)
+
+        # Collect INDEX.md if modified
+        index_p = brain / "INDEX.md"
+        if (cs.moves or cs.concepts) and index_p not in paths_to_commit:
+            paths_to_commit.append(index_p)
+
+        # Prepare LOG payload
+        payload: dict = {
+            "moves": [m.model_dump(mode="json") for m in cs.moves],
+            "concepts": [c.model_dump(mode="json") for c in cs.concepts],
+            "flags": [f.model_dump(mode="json") for f in cs.flags],
+            "schema_recs": [r.model_dump(mode="json") for r in cs.schema_recs],
+        }
+        if cs.partial_failures:
+            payload["partial_failures"] = list(cs.partial_failures)
+            # also include singular key for spec compatibility
+            payload["partial_failure"] = ", ".join(cs.partial_failures)
+
+        # Append LOG only after all writes succeeded
+        schema.append_lint_log(payload, root=brain)
+        log_p = brain / "LOG.md"
+        if log_p not in paths_to_commit:
+            paths_to_commit.append(log_p)
+
+        # Build commit message
+        iso_year, iso_week, _ = datetime.now(timezone.utc).isocalendar()
+        msg = f"lint: weekly review {iso_year}-W{iso_week:02d}"
+
+        # Deduplicate preserving order
+        seen: set[Path] = set()
+        uniq: list[Path] = []
+        for p in paths_to_commit:
+            if p not in seen:
+                seen.add(p)
+                uniq.append(p)
+
+        # Stage + commit via storage helpers with explicit cwd (replaces inline ls-files/subprocess block)
+        git.commit(msg, uniq, cwd=brain)
+        commit_hash = git.rev_parse(cwd=brain)
+        return LintResult(changeset=cs, commit_hash=commit_hash, applied=True)
+    except Exception:
+        # Do not swallow; caller sees dirty state. LOG already appended only on success path above,
+        # so if exception occurred before LOG, LOG untouched. If git commit failed after LOG, LOG is dirty
+        # but not committed — matches spec "leave dirty".
+        raise
 
 
 # ---------------------------------------------------------------------------

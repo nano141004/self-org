@@ -27,14 +27,19 @@ def _filename(id: str, slug: str) -> str:
     return f"{id}--{slug}.md"
 
 
-def raw_path_for(id: str, slug: str, when: datetime | None = None) -> Path:
+def _resolve_root(root: Path | None) -> Path:
+    return Path(root) if root is not None else brain_dir()
+
+
+def raw_path_for(id: str, slug: str, when: datetime | None = None, *, root: Path | None = None) -> Path:
     """Path under raw/YYYY/MM/DD/. Date partitioning uses UTC regardless of the local zone."""
+    base = _resolve_root(root)
     when = when or datetime.now(timezone.utc)
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
     when_utc = when.astimezone(timezone.utc)
     return (
-        brain_dir()
+        base
         / "raw"
         / f"{when_utc.year:04d}"
         / f"{when_utc.month:02d}"
@@ -43,26 +48,26 @@ def raw_path_for(id: str, slug: str, when: datetime | None = None) -> Path:
     )
 
 
-def inbox_path_for(id: str, slug: str) -> Path:
-    return brain_dir() / "inbox" / _filename(id, slug)
+def inbox_path_for(id: str, slug: str, *, root: Path | None = None) -> Path:
+    return _resolve_root(root) / "inbox" / _filename(id, slug)
 
 
-def reading_list_path_for(id: str, slug: str) -> Path:
-    return brain_dir() / "reading-list" / _filename(id, slug)
+def reading_list_path_for(id: str, slug: str, *, root: Path | None = None) -> Path:
+    return _resolve_root(root) / "reading-list" / _filename(id, slug)
 
 
-def index_path() -> Path:
-    return brain_dir() / "INDEX.md"
+def index_path(*, root: Path | None = None) -> Path:
+    return _resolve_root(root) / "INDEX.md"
 
 
-def log_path() -> Path:
-    return brain_dir() / "LOG.md"
+def log_path(*, root: Path | None = None) -> Path:
+    return _resolve_root(root) / "LOG.md"
 
 
-def schema_path() -> Path:
-    return brain_dir() / "SCHEMA.md"
+def schema_path(*, root: Path | None = None) -> Path:
+    return _resolve_root(root) / "SCHEMA.md"
 
 
-def wiki_path_for(id: str, slug: str, topic: str) -> Path:
+def wiki_path_for(id: str, slug: str, topic: str, *, root: Path | None = None) -> Path:
     sanitized = sanitize_slug(topic)
-    return brain_dir() / "wiki" / sanitized / _filename(id, slug)
+    return _resolve_root(root) / "wiki" / sanitized / _filename(id, slug)

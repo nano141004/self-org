@@ -71,64 +71,90 @@ Append-only timeline of operations. Format:
 _SUBDIRS = ("raw", "wiki", "inbox", ".index")
 
 
-def is_initialized() -> bool:
-    root = brain_dir()
+def _resolve_root(root: Path | None) -> Path:
+    return Path(root) if root is not None else brain_dir()
+
+
+def is_initialized(root: Path | None = None) -> bool:
+    base = _resolve_root(root)
     return (
-        root.is_dir()
-        and index_path().is_file()
-        and log_path().is_file()
-        and schema_path().is_file()
+        base.is_dir()
+        and index_path(root=base).is_file()
+        and log_path(root=base).is_file()
+        and schema_path(root=base).is_file()
     )
 
 
-def ensure_brain_initialized() -> bool:
+def ensure_brain_initialized(root: Path | None = None) -> bool:
     """Idempotently set up the brain directory.
 
     Returns True if initialization was performed, False if the brain was already set up.
     On a fresh init, leaves a single 'init: scaffold brain' commit in the repo.
     """
-    if is_initialized() and git.is_repo():
+    # Back-compat: positional call without kwargs uses default brain_dir.
+    # Accept root=None for parameterized use (e.g., tests with explicit brain).
+    # Also support legacy bare call: ensure_brain_initialized()
+    if root is not None:
+        base = Path(root)
+    else:
+        base = brain_dir()
+    # Check initialized using explicit base
+    if is_initialized(root=base) and git.is_repo(cwd=base):
         return False
 
-    root = brain_dir()
-    root.mkdir(parents=True, exist_ok=True)
+    base.mkdir(parents=True, exist_ok=True)
     for sub in _SUBDIRS:
-        (root / sub).mkdir(parents=True, exist_ok=True)
+        (base / sub).mkdir(parents=True, exist_ok=True)
 
-    if not schema_path().exists():
-        write_atomic(schema_path(), SCHEMA_TEMPLATE)
-    if not index_path().exists():
-        write_atomic(index_path(), INDEX_TEMPLATE)
-    if not log_path().exists():
-        write_atomic(log_path(), LOG_TEMPLATE)
+    sp = schema_path(root=base)
+    ip = index_path(root=base)
+    lp = log_path(root=base)
+    if not sp.exists():
+        write_atomic(sp, SCHEMA_TEMPLATE)
+    if not ip.exists():
+        write_atomic(ip, INDEX_TEMPLATE)
+    if not lp.exists():
+        write_atomic(lp, LOG_TEMPLATE)
 
-    if not git.is_repo():
-        git.init_repo()
-        git.commit("init: scaffold brain", [schema_path(), index_path(), log_path()])
+    if not git.is_repo(cwd=base):
+        git.init_repo(cwd=base)
+        git.commit("init: scaffold brain", [sp, ip, lp], cwd=base)
 
     return True
 
 
-def append_index_entry(id: str, title: str, classified_into: str | None, path: Path) -> None:
-    rel = path.relative_to(brain_dir()).as_posix()
+def append_index_entry(
+    id: str,
+    title: str,
+    classified_into: str | None,
+    path: Path,
+    *,
+    root: Path | None = None,
+) -> None:
+    base = _resolve_root(root)
+    try:
+        rel = path.relative_to(base).as_posix()
+    except ValueError:
+        rel = path.as_posix()
     klass = classified_into or "inbox"
     line = f"- `{id}` `{klass}` {title} → {rel}\n"
-    _append(index_path(), line)
+    _append(index_path(root=base), line)
 
 
-def append_log_entry(operation: str, payload: dict) -> None:
+def append_log_entry(operation: str, payload: dict, *, root: Path | None = None) -> None:
+    base = _resolve_root(root)
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     line = f"- `{ts}` `{operation}` {json.dumps(payload, ensure_ascii=False, sort_keys=True)}\n"
-    _append(log_path(), line)
+    _append(log_path(root=base), line)
 
 
-def update_index_entry(note_id: str, *, title: str) -> None:
+def update_index_entry(note_id: str, *, title: str, root: Path | None = None) -> None:
     """Rewrite the title of the matching INDEX.md line in place.
 
     Class and path are unchanged (in-place upgrades keep the filename).
     No commit — the caller owns the operation's commit. Missing id → no-op.
     """
-    path = index_path()
+    path = index_path(root=_resolve_root(root))
     if not path.is_file():
         return
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -145,13 +171,13 @@ def update_index_entry(note_id: str, *, title: str) -> None:
         return
 
 
-def update_index_move(note_id: str, *, new_class: str | None, new_rel: str) -> None:
+def update_index_move(note_id: str, *, new_class: str | None, new_rel: str, root: Path | None = None) -> None:
     """Rewrite klass and rel of the matching INDEX.md line atomically.
 
     Line format: ``- `id` `klass` title → rel``. Both klass and rel are
     replaced; title is preserved. Missing id → no-op. No commit.
     """
-    path = index_path()
+    path = index_path(root=_resolve_root(root))
     if not path.is_file():
         return
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -171,9 +197,9 @@ def update_index_move(note_id: str, *, new_class: str | None, new_rel: str) -> N
         return
 
 
-def append_lint_log(payload: dict) -> None:
+def append_lint_log(payload: dict, *, root: Path | None = None) -> None:
     """Thin wrapper over append_log_entry for lint operations."""
-    append_log_entry("lint", payload)
+    append_log_entry("lint", payload, root=root)
 
 
 def _append(path: Path, line: str) -> None:
