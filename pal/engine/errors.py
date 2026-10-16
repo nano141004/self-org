@@ -17,6 +17,26 @@ class ReadingItemNotFoundError(PalError):
     """Raised when set_status cannot find a reading-list item by id."""
 
 
+class StoreFormatError(PalError):
+    """The operation does not support this store format."""
+
+
+class CaptureValidationError(PalError):
+    """An interpretation has invalid source evidence or references."""
+
+
+class CaptureConflictError(PalError):
+    """Retry would overwrite unrelated or manually changed content."""
+
+
+class StoreBusyError(PalError):
+    """Another writer currently holds the store lock."""
+
+
+class CaptureNotFoundError(PalError):
+    """A requested capture has no recovery record."""
+
+
 class NotImplementedPhaseError(PalError, NotImplementedError):
     """Raised by engine stubs for capabilities that ship in a later phase."""
 

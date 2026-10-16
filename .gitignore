@@ -1,5 +1,3 @@
-CLAUDE.md
-
 .env
 
 __pycache__/
@@ -17,4 +15,6 @@ htmlcov/
 .tox/
 .mypy_cache/
 .ruff_cache/
-.slim/deepwork/
+
+# Keep project instructions in version control.
+!AGENTS.md

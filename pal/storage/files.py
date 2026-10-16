@@ -7,7 +7,7 @@ from pathlib import Path
 import frontmatter
 
 
-def write_atomic(path: Path, content: str) -> None:
+def write_bytes_atomic(path: Path, content: bytes) -> None:
     """Write to a tempfile in the same directory, fsync, then atomic-rename.
 
     On any failure between fdopen and os.replace, the tempfile is cleaned up so
@@ -21,7 +21,7 @@ def write_atomic(path: Path, content: str) -> None:
     )
     tmp = Path(tmp_name)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+        with os.fdopen(fd, "wb") as f:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
@@ -33,6 +33,16 @@ def write_atomic(path: Path, content: str) -> None:
             except OSError:
                 pass
         raise
+
+
+def write_atomic(path: Path, content: str) -> None:
+    """Write UTF-8 without translating line endings or trimming the payload."""
+    write_bytes_atomic(path, content.encode("utf-8"))
+
+
+def read_original(path: Path) -> str:
+    """Read an original without Python's universal-newline conversion."""
+    return path.read_bytes().decode("utf-8")
 
 
 def write_note(path: Path, frontmatter_data: dict, body: str) -> None:

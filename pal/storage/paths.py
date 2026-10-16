@@ -71,3 +71,36 @@ def schema_path(*, root: Path | None = None) -> Path:
 def wiki_path_for(id: str, slug: str, topic: str, *, root: Path | None = None) -> Path:
     sanitized = sanitize_slug(topic)
     return _resolve_root(root) / "wiki" / sanitized / _filename(id, slug)
+
+
+def resolve_record_path(relative: str, *, root: Path | None = None) -> Path:
+    """Resolve a brain-relative path, including protection against symlink escapes."""
+    base = _resolve_root(root).resolve()
+    part = Path(relative)
+    if part.is_absolute() or ".." in part.parts or "\\" in relative or ":" in relative:
+        raise ValueError(f"not a brain-relative record path: {relative}")
+    target = (base / part).resolve()
+    if not target.is_relative_to(base) or target == base:
+        raise ValueError(f"record path escapes brain: {relative}")
+    return target
+
+
+def validate_id(record_id: str) -> str:
+    if not re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{26}", record_id):
+        raise ValueError("expected a 26-character ULID")
+    return record_id
+
+
+def capture_relative_paths(record_id: str, when: datetime) -> tuple[str, str]:
+    validate_id(record_id)
+    stamp = when.astimezone(timezone.utc)
+    prefix = f"captures/{stamp:%Y/%m/%d}/{record_id}"
+    return prefix + ".md", prefix + ".txt"
+
+
+def item_relative_path(record_id: str, title: str) -> str:
+    return f"items/{validate_id(record_id)}--{sanitize_slug(title)}.md"
+
+
+def operation_path(record_id: str, *, root: Path | None = None) -> Path:
+    return resolve_record_path(f".operations/{validate_id(record_id)}.json", root=root)

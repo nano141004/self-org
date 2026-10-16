@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from pal.engine.errors import ReadingItemNotFoundError
@@ -22,10 +22,30 @@ class ReadingItem:
     date_added: str | None
     author: str | None = None
     published: str | None = None
+    path: str | None = None
+    contexts: list[str] = field(default_factory=list)
+    sources: list[dict] = field(default_factory=list)
+    processing_state: str | None = None
 
 
 def _item_from_path(path: Path) -> ReadingItem:
     fm, _ = read_note(path)
+    if fm.get("record_type") == "item":
+        from pal.storage.paths import resolve_record_path
+        from pal.storage.records import read_capture, read_item
+        record = read_item(path)
+        states = []
+        for source in record.sources:
+            matches = list((brain_dir() / "captures").rglob(source.capture_id + ".md"))
+            states.append(read_capture(resolve_record_path(matches[0].relative_to(brain_dir()).as_posix())).processing_state
+                          if len(matches) == 1 else "incomplete")
+        return ReadingItem(
+            id=record.id, title=record.title, url=record.url, status=record.reading_status,
+            summary=record.description, date_added=record.created_at,
+            path=path.relative_to(brain_dir()).as_posix(), contexts=record.contexts,
+            sources=[s.model_dump() for s in record.sources],
+            processing_state="complete" if states and all(s == "complete" for s in states) else "incomplete",
+        )
     return ReadingItem(
         id=str(fm.get("id", "")),
         title=str(fm.get("title", "")),
@@ -52,10 +72,14 @@ def find_by_url(url: str) -> Path | None:
 
 def list_items(status: str | None = None, topic: str | None = None) -> list[ReadingItem]:
     """List reading-list items, optionally filtered by status and/or topic substring."""
-    root = brain_dir() / "reading-list"
+    modern = schema.store_format() == 2
+    root = brain_dir() / ("items" if modern else "reading-list")
     if not root.is_dir():
         return []
-    items = [_item_from_path(p) for p in sorted(root.glob("*.md"))]
+    paths = sorted(root.glob("*.md"))
+    if modern:
+        paths = [p for p in paths if read_note(p)[0].get("kind") == "reading"]
+    items = [_item_from_path(p) for p in paths]
     if status is not None:
         items = [i for i in items if i.status == status]
     if topic is not None:
@@ -64,6 +88,7 @@ def list_items(status: str | None = None, topic: str | None = None) -> list[Read
             i
             for i in items
             if needle in i.title.lower() or needle in (i.url or "").lower()
+            or (modern and needle in (" ".join(i.contexts) + " " + (i.summary or "")).lower())
         ]
     return items
 
@@ -80,6 +105,7 @@ def _find_path(note_id: str) -> Path:
 
 def set_status(note_id: str, status: str) -> ReadingItem:
     """Update the status frontmatter of a reading-list item; one commit per op."""
+    schema.require_legacy("reading progress updates")
     if status not in VALID_STATUSES:
         raise ValueError(
             f"invalid status {status!r}; expected one of {', '.join(VALID_STATUSES)}"

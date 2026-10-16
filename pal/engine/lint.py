@@ -104,6 +104,7 @@ def _resolve_brain_dir(explicit: Path | None) -> Path:
 
 
 def _ensure_initialized(resolved: Path, explicit: bool) -> None:
+    schema.require_legacy("lint", root=resolved)
     if explicit:
         # Custom dir: check required files exist.
         if not (
@@ -475,12 +476,13 @@ def render_diff_text(cs: LintChangeset) -> str:
 
 
 def apply_changeset(cs: LintChangeset, *, dry_run: bool = False, brain_dir: Path | None = None) -> LintResult:
-    """Apply changeset atomically with a single commit.
+    """Apply a legacy changeset sequentially and record one commit.
 
     dry_run=True -> no writes, return applied=False.
     On success: writes + INDEX/LOG + single commit ``lint: weekly review YYYY-WW``.
     On failure before commit: partial files may exist but LOG not appended; caller sees dirty git.
     """
+    schema.require_legacy("lint", root=_resolve_brain_dir(brain_dir))
     if dry_run:
         return LintResult(changeset=cs, commit_hash=None, applied=False)
 

@@ -105,3 +105,30 @@ def rev_parse(rev: str = "HEAD", *, cwd: Path | None = None) -> str:
     root = Path(cwd) if cwd is not None else brain_dir()
     result = _run(["rev-parse", rev], cwd=root)
     return result.stdout.strip()
+
+
+def staged_paths(*, cwd: Path) -> set[str]:
+    return set(filter(None, _run(["diff", "--cached", "--name-only", "-z"], cwd).stdout.split("\0")))
+
+
+def require_staged_within(paths: list[str], *, cwd: Path) -> None:
+    unrelated = staged_paths(cwd=cwd) - set(paths)
+    if unrelated:
+        raise GitError("unrelated staged changes must be committed or unstaged before this operation")
+
+
+def has_commit(message: str, *, cwd: Path) -> bool:
+    output = _run(["log", "--format=%s", "--fixed-strings", f"--grep={message}"], cwd).stdout
+    return message in output.splitlines()
+
+
+def has_changes(paths: list[str], *, cwd: Path) -> bool:
+    return bool(_run(["status", "--porcelain", "--", *paths], cwd).stdout.strip())
+
+
+def commit_operation(message: str, paths: list[str], *, cwd: Path) -> None:
+    """Commit only an operation's paths, tolerating an already-recorded phase."""
+    require_staged_within(paths, cwd=cwd)
+    if not has_changes(paths, cwd=cwd) and has_commit(message, cwd=cwd):
+        return
+    commit(message, paths, cwd=cwd)

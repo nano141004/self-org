@@ -4,6 +4,10 @@ import subprocess
 import sys
 
 ENGINE_MODULES = [
+    "pal.models",
+    "pal.engine.capture",
+    "pal.storage.records",
+    "pal.storage.catalog",
     "pal.engine",
     "pal.engine.errors",
     "pal.engine.ingest",

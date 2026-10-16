@@ -10,7 +10,11 @@ from pal.engine.errors import (
     BrainNotInitializedError,
     EmptyThoughtError,
     NotImplementedPhaseError,
+    PalError,
+    StoreFormatError,
 )
+from pal.engine.capture import preview_capture, retry_capture as engine_retry_capture
+from pal.models import CaptureResult
 from pal.engine.ingest import (
     TITLE_MAX,
     add_link as engine_add_link,
@@ -22,7 +26,7 @@ from pal.engine.ingest import (
 )
 from pal.engine.query import query
 from pal.engine.triage import Route
-from pal.storage import schema
+from pal.storage import git, schema
 from pal.storage.paths import brain_dir
 
 
@@ -79,9 +83,13 @@ def _summary_of(path) -> str | None:
 
 
 @app.command()
-def init() -> None:
+def init(format_version: int | None = typer.Option(None, "--format-version", help="1: legacy (default); 2: capture/item store in a new empty directory.")) -> None:
     """Initialize the brain directory."""
-    did = schema.ensure_brain_initialized()
+    try:
+        did = schema.ensure_brain_initialized(format_version=format_version)
+    except (PalError, git.GitError, OSError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1)
     if did:
         typer.echo(f"Initialized brain at {brain_dir()}")
     else:
@@ -102,22 +110,38 @@ def add(
     why: bool = typer.Option(
         False, "--why", help="Also print the classification rationale."
     ),
+    context: str | None = typer.Option(None, "--context", help="Optional context hint for a format-2 capture."),
 ) -> None:
-    """Capture one thought as a fleeting note."""
+    """Capture text using the initialized store's format."""
     if not text.strip():
         typer.echo("Refusing to ingest empty text.", err=True)
         raise typer.Exit(code=2)
     try:
+        if schema.store_format() == 2 and dry_run:
+            if into is not None:
+                raise StoreFormatError("--into is legacy-only; use --context")
+            proposal = preview_capture(text, context)
+            typer.echo("[dry-run] Nothing saved. Proposed interpretation:")
+            typer.echo(proposal.model_dump_json(indent=2))
+            return
+        if context is not None and schema.store_format() != 2:
+            raise StoreFormatError("--context requires a format-2 store")
         if dry_run:
             _dry_run(text, into=into, why=why)
             return
-        result = add_thought(text, into=into)
+        result = add_thought(text, into=into, context_hint=context, entry_route="cli")
     except EmptyThoughtError:
         typer.echo("Refusing to ingest empty text.", err=True)
         raise typer.Exit(code=2)
     except BrainNotInitializedError:
         typer.echo("Brain not initialized. Run: pal init", err=True)
         raise typer.Exit(code=1)
+    except (PalError, git.GitError, ValueError, OSError, LLMUnavailableError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    if isinstance(result, CaptureResult):
+        _echo_capture_result(result)
+        return
     if result.class_path == "reading-list" or result.action != "created":
         _echo_link_result(result)
         return
@@ -127,6 +151,31 @@ def add(
         typer.echo(f"rationale: {result.rationale}")
     if result.warning:
         typer.echo(f"[warn] {result.warning}", err=True)
+
+
+def _echo_capture_result(result: CaptureResult) -> None:
+    typer.echo(f"Capture {result.capture_id}: {'saved' if result.capture_saved else 'not accepted'}")
+    typer.echo(f"Organization: {result.processing_state}; history: {result.history_state}")
+    typer.echo(f"Brain: {result.brain_root}")
+    typer.echo(f"Capture: {result.capture_path}\nOriginal: {result.payload_path}")
+    typer.echo(f"Guide: {result.guide_path}\nIndex: {result.index_path}")
+    for item in result.items:
+        typer.echo(f"[{item.id}] {item.kind}: {item.title} -> {item.path}")
+    for warning in result.warnings:
+        typer.echo(f"[warn] {warning}", err=True)
+    if not result.capture_saved:
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def retry(capture_id: str = typer.Argument(..., help="Saved capture ID to resume.")) -> None:
+    """Resume incomplete format-2 organization without creating another capture."""
+    try:
+        result = engine_retry_capture(capture_id)
+    except (PalError, git.GitError, ValueError, OSError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    _echo_capture_result(result)
 
 
 @app.command(name="add-link")
@@ -140,6 +189,11 @@ def add_link_cmd(
     if not url.strip():
         typer.echo("Refusing to ingest empty url.", err=True)
         raise typer.Exit(code=2)
+    try:
+        schema.require_legacy("article enrichment")
+    except PalError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1)
     if dry_run:
         title = derive_link_title(clean_url(url))
         typer.echo(f"[dry-run] -> reading-list: {title}")
@@ -148,6 +202,9 @@ def add_link_cmd(
         result = engine_add_link(url)
     except BrainNotInitializedError:
         typer.echo("Brain not initialized. Run: pal init", err=True)
+        raise typer.Exit(code=1)
+    except (PalError, git.GitError, OSError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1)
     _echo_link_result(result)
 
@@ -178,6 +235,9 @@ def lint(
         cs = lint_engine.plan_lint()
     except BrainNotInitializedError:
         typer.echo("Brain not initialized. Run: pal init", err=True)
+        raise typer.Exit(code=1)
+    except PalError as exc:
+        typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1)
     except KeyboardInterrupt:
         raise typer.Exit(code=130)

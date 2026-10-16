@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "pal"
 version = "0.1.0"
 description = "Headless, local-first Personal Knowledge Engine and private assistant."
-readme = "CLAUDE.md"
+readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "self-org" }]
 dependencies = [

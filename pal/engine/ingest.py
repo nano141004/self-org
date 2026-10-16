@@ -13,7 +13,8 @@ from pal.agent.prompts import (
     IngestDecision,
     LinkDecision,
 )
-from pal.engine.errors import BrainNotInitializedError, EmptyThoughtError
+from pal.engine.errors import BrainNotInitializedError, EmptyThoughtError, StoreFormatError
+from pal.models import CaptureResult
 from pal.engine.fetch import MAX_BODY_CHARS, THIN_TEXT_CHARS, FetchError, fetch_article
 from pal.engine.reading_list import find_by_url
 from pal.engine.triage import Route, route
@@ -100,6 +101,7 @@ def classify_thought(text: str) -> Route | IngestDecision:
     any LLM-layer exception (incl. `LLMUnavailableError`) propagates so the
     caller decides the fallback (ingest → inbox/, dry-run → preview).
     """
+    schema.require_legacy("legacy classification")
     text = text.strip()
     if not text:
         raise EmptyThoughtError("refusing to ingest empty text")
@@ -127,6 +129,7 @@ def _store_fleeting(
     rationale: str | None = None,
 ) -> IngestResult:
     """Write a fleeting note, append INDEX + LOG, commit; returns where it landed."""
+    schema.require_legacy("legacy note storage")
     note_id = new_id()
     path = raw_path_for(note_id, slug) if class_path else inbox_path_for(note_id, slug)
 
@@ -172,6 +175,7 @@ def add_link_note(
     `log_extra` merges extra keys into the LOG `ingest` payload (e.g.
     `fetch_error` from the Phase 2b failure path) without a second commit.
     """
+    schema.require_legacy("article enrichment")
     if not (schema.is_initialized() and git.is_repo()):
         raise BrainNotInitializedError("brain not initialized — run 'pal init' first")
 
@@ -254,7 +258,8 @@ def _index_and_commit(title: str, path: Path, payload: dict, paths: list[Path]) 
     git.commit(f"ingest: {title}", paths)
 
 
-def add_thought(text: str, into: str | None = None) -> IngestResult:
+def add_thought(text: str, into: str | None = None, *, context_hint: str | None = None,
+                origin: dict[str, str] | None = None, entry_route: str = "engine") -> IngestResult | CaptureResult:
     """Triage and store one thought; returns where it landed.
 
     `into` bypasses routing and the LLM entirely. URLs route deterministically
@@ -264,6 +269,13 @@ def add_thought(text: str, into: str | None = None) -> IngestResult:
     inbox/ with a warning — a thought is never dropped. The decision's
     `rationale` is carried back on `IngestResult` for `pal add --why`.
     """
+    if schema.store_format() == 2:
+        if into is not None:
+            raise StoreFormatError("--into/category_hint is legacy-only; use --context/context_hint")
+        from pal.engine.capture import save_capture
+        return save_capture(text, context_hint=context_hint, origin=origin, entry_route=entry_route)
+    if context_hint is not None or origin:
+        raise StoreFormatError("context/origin fields require a format-2 store")
     text = text.strip()
     if not text:
         raise EmptyThoughtError("refusing to ingest empty text")
@@ -317,6 +329,7 @@ def add_link(url: str, note: str | None = None) -> IngestResult:
     leave the existing note untouched). Re-adding a URL upgrades a
     failed-fetch note in place; re-adding a summarized URL is a no-op.
     """
+    schema.require_legacy("article enrichment")
     if not url or not url.strip():
         raise EmptyThoughtError("refusing to ingest empty url")
     if not (schema.is_initialized() and git.is_repo()):
