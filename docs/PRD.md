@@ -1,141 +1,119 @@
-# Product plan: a personal second brain
+# Product direction
 
-Updated: 2026-10-16. Direction aligned in chat; Iteration 1 implemented and
-checked with temporary stores and mocked providers. Iteration 2 remains future work. [README](../README.md) is the entry point; [DESIGN](DESIGN.md)
-defines the implemented first-iteration contract and future behavior;
-[ITERATION-1](ITERATION-1.md) maps it to code;
-[CODEBASE](CODEBASE.md) records actual behavior.
+pal is a personal knowledge store for material that is easy to capture and
+easy to forget: ideas, intentions, books, links, and useful parts of
+conversations. Its purpose is to make that material understandable and
+reusable without requiring detailed organization at capture time.
 
-## 1. Problem and desired outcome
+See [the README](../README.md) for setup, [the design](DESIGN.md) for the data
+model, and [the codebase guide](CODEBASE.md) for implementation details.
 
-People send random thoughts, intentions, books, links, and conversation
-fragments to themselves. The collection grows, but its meaning and usefulness
-become hard to recover.
+## Problem
 
-> I can dump things without organizing them first. The system preserves what
-> I supplied, makes sense of it using context, connects it to relevant material,
-> and leaves it useful for different purposes later.
+Personal notes often preserve an artifact while losing its role: why a link
+was saved, which project an idea belonged to, whether a thought was tentative,
+or how a later message changed an earlier position.
 
-This is a general second brain. Reading lists and a knowledge base are concrete
-uses. Reminders, schedules, and proactive suggestions can build on the store
-later.
+A mixed message can contain several useful things. A book recommendation and
+an idea for applying it should be accessible independently while retaining
+their connection and original context.
 
-## 2. Agreed responsibilities
+## Intended experience
 
-| Responsibility | Owner |
-|---|---|
-| Preserve input and available origin information | pal |
-| Interpret mixed material and maintain useful records and connections | pal, with model judgment |
-| Maintain a guide, catalog, record paths, and source references | pal |
-| Choose searches, read files, follow connections, assemble evidence, and answer a particular question | External agent or future agent runtime |
-| Provide access to the files | Agent's filesystem tools, or a later thin access bridge |
+A person or agent supplies text with optional origin/context information.
+pal preserves the original and derives useful items with source references.
+The resulting store can support reading lists, project collections, and
+evidence for later reasoning.
 
-Initial reuse is agent-led navigation. A dedicated browse/find/open API,
-internal question-answering engine, vector database, or graph database is
-not required. An index does not itself grant access: the first complete reuse
-flow assumes an agent with filesystem access to the store.
-
-The organizing system should choose whether to create, enrich, connect, or
-revise material according to context. Routine organization should not require
-the owner to approve every record. Preserved evidence, uncertainty, and
-correctability remain essential.
-
-## 3. Behavioral principles
-
-- Preserve original content before model interpretation or enrichment.
-- Keep entry route separate from origin: MCP may deliver a WhatsApp excerpt.
-- A mixed capture can yield several useful items, or no separate item.
-- Keep kind, topic/project context, reading progress, and uncertainty separate.
-- Retain the owner's reasons for saving a resource, including later reasons.
-- Distinguish owner statements, quoted speakers, assistant suggestions, and
-  model interpretation. Missing context remains unknown.
-- A source link establishes traceability; it does not prove correctness.
-- New captures can change an active interpretation without erasing history.
-- Views reuse underlying records; they do not create disconnected copies.
-
-Working foundations: local readable files, stable IDs, Git history, and one
-engine shared by CLI and MCP. The concrete first-iteration contract is implemented as format 2;
-legacy behavior remains separately documented.
-
-## 4. First implementation iteration
-
-**Outcome:** one mixed text dump becomes preserved, organized, and navigable.
-
-Use this inspectable example:
+For example:
 
 > I should read Book X. Maybe its approach could help with Project Y.
 
-The store preserves the complete input and derives a non-URL reading entry
-and a tentative idea, with a connection and supporting source excerpts. An
-agent with filesystem access can find their index entries, read the files, and reach the original.
+A useful interpretation includes a reading entry, a tentative project idea,
+their connection, and supporting excerpts. It does not invent an author,
+deadline, or decision to use the approach.
 
-Included:
+## Responsibilities
 
-1. Plain-text capture through the existing CLI/MCP entry points in an
-   explicitly selected new-format store.
-2. Capture-first persistence and a visible organization state.
-3. Multiple interpreted items with engine-assigned IDs, sources, and links.
-4. A concise guide and maintained catalog, including pending captures.
-5. Capture-targeted retry without duplicate active items.
-6. Reading-list compatibility for the new non-URL resource.
-7. An explicit coexistence boundary with the legacy format.
+| Component | Responsibility |
+|---|---|
+| pal | Capture, interpretation, record persistence, links, catalog maintenance, and recovery |
+| Model layer | Propose independently useful items and relationships |
+| External agent | Choose searches, inspect files and sources, gather context, and synthesize answers |
+| Filesystem/access layer | Make the store's guide, index, and records available to the agent |
 
-A pasted conversation is preserved as supplied text. Dedicated chat parsing,
-message identity, and reliable speaker extraction are later capabilities.
-URLs inside text remain preserved; article fetching is not part of this
-iteration's new-format flow.
+The initial access pattern is an agent navigating local files. A dedicated
+query engine, graph database, or vector index is not a prerequisite.
 
-[ITERATION-1.md](ITERATION-1.md) records the completed implementation sequence,
-new-format boundary, and checkpoint evidence.
+## Product principles
 
-## 5. Subsequent work
+- Preserve supplied content before interpretation.
+- Keep model interpretation separate from original material.
+- Retain reasons for saving a resource and the context behind an idea.
+- Distinguish source authorship, quoted suggestions, and inferred connections.
+- Keep kind, topic/project context, reading progress, and uncertainty separate.
+- Allow a capture to yield several items or no separate item.
+- Use stable identities and resolvable references across views.
+- Make incomplete processing visible and resumable.
+- Treat traceability and semantic correctness as separate properties.
 
-| Stage | Intended outcome | Position |
+The longer-term organizing system should use existing context to choose
+whether to create, enrich, connect, or revise records. Routine organization
+should require little manual effort while remaining inspectable and correctable.
+
+## Current scope
+
+Milestone 1 implements the text-to-records loop in opt-in format-2 stores:
+
+1. Preserve the text received through CLI or MCP.
+2. Interpret independently useful items, including reading resources without URLs.
+3. Validate excerpts and within-capture relationship targets.
+4. Maintain a concise guide and descriptive catalog.
+5. Report saved, incomplete, and pending-history states accurately.
+6. Resume the same capture without generating duplicate active items.
+
+Pasted conversations are stored as text. Dedicated message parsing,
+speaker-aware imports, and reliable source identity across imports are not
+implemented. Embedded URLs are preserved; article fetching remains a legacy
+format capability.
+
+## Roadmap
+
+| Milestone | Outcome | Status |
 |---|---|---|
-| Product and behavior alignment | General second brain, agent-led reuse, contextual organization | Completed in discussion |
-| Iteration 1 planning | Minimum records, storage boundaries, file-by-file work, completion checks | Completed |
-| Iteration 1 implementation | Preserve -> interpret -> connect -> index -> agent navigation | Implemented; focused non-live checkpoint passed |
-| Iteration 2 | Use existing context to choose creation, enrichment, connection, or revision | Direction aligned; detailed implementation unplanned |
-| Further development | Article enrichment, maintained pages, chat imports, access bridges, scale improvements | Deferred |
+| 1. Capture and navigation | Preserved originals, linked items, guide/catalog, and recovery | Implemented |
+| 2. Contextual maintenance | Inspect existing records and choose creation, enrichment, connection, or revision | Planned |
+| Later extensions | Chat imports, new-format article enrichment, maintained pages, access bridges, and scale improvements | Exploratory |
 
-Iteration 2 should demonstrate several captures over time: a book is saved,
-its possible project application gains detail, reading progress changes, a
-reusable takeaway is recorded, and the project application is later set aside.
-The system decides from context; examples do not become hard-coded book rules.
+The next milestone should support evolving context: a resource is saved,
+another capture explains its use, a general takeaway is recorded, and a later
+assessment changes the project-specific application. Source history and
+uncertainty should survive those changes.
 
-Jev may later support focused decisions such as resource identity or whether
-new material revises an earlier view. It is not a prerequisite or selected
-provider. See [the design note](DESIGN.md#7-later-contextual-maintenance-and-jev).
+A decision component such as Jev may be evaluated for focused organization
+judgments. No particular provider, search backend, or database has been
+selected for that future work.
 
-## 6. Success and verification
+## Success criteria
 
-The first implementation checkpoint verified the following with inspectable
-temporary artifacts and mocked providers:
+Useful storage means that a saved item can be found, understood, and traced
+back to the material that produced it.
 
-- The supplied text survives unchanged at the engine input boundary.
-- The reading item and tentative idea are independently discoverable.
-- Item and relationship references resolve; supporting excerpts match.
-- An agent can navigate index -> item -> original using its own tools.
-- Failure reports distinguish saved input, incomplete organization, and
-  incomplete history/catalog work.
-- Retry resumes the same capture and avoids duplicate active items.
-- Legacy stores remain untouched by new-format initialization or migration.
+Preservation and recovery can be checked structurally. Interpretation quality
+also needs reviewed examples: useful information should survive without
+invented attribution, certainty, or commitments. Reuse should require little
+search or correction effort.
 
-Run tests only when the owner explicitly requests them; iteration checkpoints
-do not trigger testing automatically. Requested tests use temporary stores and
-mocked providers, limited to changed behavior and directly affected files.
-Human review assesses interpretation quality; structural tests do not establish meaning.
-These checks establish tested behavior, not semantic faithfulness, live-provider
-reliability, or large-store performance.
+Milestone 1 has focused offline verification with temporary stores and mocked
+providers. Real-model interpretation quality, long-running use, and large-store
+performance remain unmeasured. See [Milestone 1](ITERATION-1.md).
 
-## 7. Boundaries
+## Boundaries
 
-- One owner's store, initially used by a local agent with filesystem access.
-- Preserve legacy behavior and useful tests while adapting the new format.
-- No automatic migration or reading of the owner's real brain.
-- Cross-capture merges, knowledge-page refresh, human-edit reconciliation,
-  deletion semantics, and advanced import deduplication need later contracts.
-- Jev, semantic search, a background worker, reminders, and a full app can be
-  considered after a demonstrated need.
-- The owner authorized implementation after the planning/documentation pass.
-  Iteration 1 is complete; later iterations are separate work.
+The current design assumes one person's local store and an agent with file
+access. Existing stores are not migrated automatically. Cross-capture updates,
+human-edit reconciliation, deletion semantics, knowledge-page refresh, and
+large imports need further contracts.
+
+Reminders, proactive suggestions, autonomous research, and a full application
+can build on the store later; they do not define its initial storage model.

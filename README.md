@@ -1,98 +1,174 @@
-# self-org / pal
+# pal
 
-A personal second brain for thoughts, intentions, books, links, and material
-worth keeping from conversations.
+A local-first personal knowledge store for scattered thoughts, reading
+intentions, ideas, and useful material from conversations.
 
-The store preserves supplied text, interprets useful parts, and organizes
-them into connected records. Agents use a short guide, catalog, readable
-files, and their own search/read tools to navigate and answer questions.
+pal preserves the original text and uses a model to turn useful parts into
+connected records. An AI agent can search the store, follow its references,
+and use the original sources when answering questions. The Python package and
+CLI are named `pal`; this repository is `self-org`.
 
-## Current state
+## Why it exists
 
-Updated: **2026-10-16**. Iteration 1 is implemented with focused non-live
-verification. Two store formats coexist without automatic migration:
+Sending a thought or link to yourself is easy. Recovering why it mattered a
+month later is harder.
 
-| Format | Available behavior |
+A single message might contain a book to read, a project idea, and a reason
+they are connected. pal is designed to preserve that context while making
+each useful part independently accessible. Reading lists and project
+collections use the same underlying records.
+
+The current prototype implements capture, interpretation, source links, and
+agent-readable navigation. Context-aware updates to existing records are the
+next milestone.
+
+## How it works
+
+```text
+Text from a person or agent
+    -> preserved original
+    -> model interpretation
+    -> connected items with source excerpts
+    -> guide and index
+    -> agent searches and reads with its own tools
+```
+
+Knowledge files live locally in a separate data directory. Interpretation
+uses the configured model API. Original text and model-generated content are
+stored separately.
+
+## Installation
+
+Requirements: Python 3.11+, Git, and a Git author identity configured for
+commits in the data directory.
+
+```sh
+git clone https://github.com/nano141004/self-org.git
+cd self-org
+python -m venv .venv
+```
+
+Activate the environment:
+
+- macOS/Linux: `source .venv/bin/activate`
+- PowerShell: `.\.venv\Scripts\Activate.ps1`
+
+Then install from source:
+
+```sh
+python -m pip install -e .
+```
+
+Copy `.env.example` to `.env` and configure the model credentials. The
+current model wrapper uses `GEMINI_API_KEYS` (or `GEMINI_API_KEY`), with
+`PAL_LLM_PRIMARY_MODEL` and optional comma-separated
+`PAL_LLM_FALLBACK_MODELS` controlling the model selection.
+
+## Quick start
+
+Select a new, empty data directory. For macOS/Linux:
+
+```sh
+export BRAIN_DIR="$HOME/pal-brain"
+```
+
+For PowerShell:
+
+```powershell
+$env:BRAIN_DIR = Join-Path $env:USERPROFILE "pal-brain"
+```
+
+Initialize the capture/item format and save a thought:
+
+```sh
+pal init --format-version 2
+pal add "I should read Book X. Maybe its approach could help with Project Y." --context "Project Y"
+```
+
+The message can produce a reading entry and a tentative project idea, linked
+to each other and to excerpts from the preserved original. Exact item titles
+and interpretation depend on the configured model.
+
+The response includes a capture ID, original and metadata paths, generated
+item references, processing state, history state, and guide/index locations.
+If interpretation is unavailable, the original remains saved and organization
+is reported as incomplete. Resume it with:
+
+```sh
+pal retry <capture-id>
+```
+
+Preview interpretation without saving:
+
+```sh
+pal add "A thought to organize" --dry-run
+```
+
+## Using the store with an agent
+
+Give an agent filesystem access to the directory shown in the capture result.
+
+1. Read `SCHEMA.md` for the layout and metadata conventions.
+2. Search `INDEX.md` or the underlying files.
+3. Open relevant items and resolve related IDs through the index.
+4. Follow source references to the preserved captures.
+
+The index includes descriptions, context labels, paths, and incomplete
+processing states. The agent decides what to search, read, and connect for
+the task. Internal answer synthesis and a dedicated retrieval API are not
+required for this workflow.
+
+## MCP
+
+Start the MCP server with:
+
+```sh
+pal-mcp
+```
+
+Configure `BRAIN_DIR` and provider settings in the server's environment.
+The available tools are:
+
+| Tool | Purpose |
 |---|---|
-| 1, legacy/default | Single-note text classification, article fetching, reading lists, and legacy lint |
-| 2, explicit opt-in | Exact original text, multiple interpreted items, source/relationship links, maintained guide/catalog, incomplete states, and retry |
+| `add_to_brain` | Capture text; format 2 accepts optional context and origin metadata |
+| `retry_capture` | Resume an existing format-2 capture |
+| `get_reading_list` | List reading entries, including non-URL resources in format 2 |
+| `run_lint` | Plan/apply organization in legacy stores |
 
-Format 2 supports non-URL reading entries. Processing state, reading progress,
-uncertainty, and attribution are distinct. Progress is left unknown unless the
-capture supports it; URL metadata must appear in the supplied text.
+A client connected only through MCP also needs filesystem or resource access
+to read the stored files. Returning local paths does not provide that access.
 
-Cross-capture enrichment/revision is Iteration 2. Dedicated chat import,
-new-format article fetching, maintained wiki pages, MCP-only file access,
-Jev, and advanced search remain deferred. Internal `pal ask` and `pal reindex`
-are still placeholders; agents navigate with their existing tools.
+## Store formats and current limits
 
-## Start the new flow
+| Capability | Format 2 | Legacy format 1 |
+|---|---|---|
+| Original text preservation | Separate exact UTF-8 payload | A saved note may contain model rewriting |
+| Mixed-message organization | Multiple source-linked items | One classified note |
+| Navigation | Descriptive guide and derived catalog | Earlier guide and one-line catalog |
+| Retry after partial organization | Durable item plan and stable IDs | No equivalent capture retry |
+| Article fetching and lint | Not supported yet | Available with known limitations |
 
-Python 3.11+, Git, and a project virtual environment are required. From this
-repository in PowerShell, select a **new empty data directory**:
+`pal init` without a format option retains legacy behavior. Format 2 is
+explicitly selected in a new empty directory; there is no automatic migration.
+`--into`, explicit `add-link`, and lint are legacy-only. Format 2 uses
+`--context` for a context hint.
 
-```powershell
-rtk proxy .venv\Scripts\python.exe -m pip install -e ".[dev]"
-$env:BRAIN_DIR = Join-Path $env:USERPROFILE "pal-brain-v2"
-rtk proxy .venv\Scripts\pal.exe init --format-version 2
-rtk proxy .venv\Scripts\pal.exe add "I should read Book X. Maybe its approach could help with Project Y." --context "Project Y"
-```
+Cross-capture merging/revision, dedicated chat imports, maintained knowledge
+pages, and advanced search are future work. `pal ask` and `pal reindex`
+remain placeholders. Source links make interpretations inspectable; they do
+not establish semantic correctness.
 
-Configure provider settings using `.env.example`. Without an available model,
-the original is still saved and the response reports incomplete organization.
-After resolving the problem:
+## Documentation and contributing
 
-```powershell
-rtk proxy .venv\Scripts\pal.exe retry <capture-id>
-```
-
-The save result reports the brain root, guide/index paths, original/capture
-locations, item references, processing state, history state, and warnings.
-Give the agent that location: read `SCHEMA.md`, search `INDEX.md` or the files,
-open items, and follow sources to original text. An MCP-only client needs
-separate file access; local paths alone do not grant it.
-
-`pal add --dry-run` previews without saving. `--into` and explicit
-`add-link`/lint are legacy-only; format 2 rejects them before mutation.
-Use `--context` for a format-2 context hint.
-
-## Existing legacy stores and MCP
-
-Without an explicit format selection, `pal init` retains legacy behavior.
-Existing data and custom guides are not automatically converted or rewritten.
-Data remains outside the code repository: `BRAIN_DIR`, default `~/brain/`.
-
-```powershell
-rtk proxy .venv\Scripts\pal-mcp.exe
-```
-
-MCP exposes `add_to_brain`, `retry_capture`, `get_reading_list`, and
-legacy `run_lint`. Format-2 capture accepts optional `context_hint` and
-known `origin` metadata. Legacy response shapes remain compatible.
-
-## Project map
-
-Realignment continues in chat, one topic at a time. These documents keep the
-project aligned without requiring the owner to read everything at once.
-
-| Document | Purpose |
+| Document | Contents |
 |---|---|
-| [Product plan](docs/PRD.md) | Direction, iteration scope, and later work |
-| [Design](docs/DESIGN.md) | Implemented first-iteration contracts and future boundaries |
-| [Iteration 1](docs/ITERATION-1.md) | Completed file responsibilities, sequence, and checkpoint |
-| [Codebase map](docs/CODEBASE.md) | Actual implementation, legacy findings, and validation limits |
-| [Contributor instructions](AGENTS.md) | Working boundaries and testing cadence |
+| [Product direction](docs/PRD.md) | Use cases, responsibilities, and product goals |
+| [Architecture and data model](docs/DESIGN.md) | Records, save lifecycle, recovery, and navigation |
+| [Codebase guide](docs/CODEBASE.md) | Modules, entry points, and known limitations |
+| [Milestone 1](docs/ITERATION-1.md) | Delivered scope, validation record, and next milestone |
+| [Contributing](CONTRIBUTING.md) | Development setup and focused verification |
 
-## Verification
-
-Run tests only when the owner explicitly requests them, including at iteration
-checkpoints. Requested tests should cover only changed behavior and directly
-affected files; broader runs require a separate request. Do not run builds or
-live provider calls as routine verification. See [AGENTS.md](AGENTS.md).
-
-Historical evidence: the first implementation checkpoint passed **186 focused
-checks** before this policy change; see [CODEBASE.md](docs/CODEBASE.md#5-validation-and-limits)
-for scope and subsequent targeted verification.
-
-No actual brain was accessed or migrated. Old phase plans remain in Git
-history at `469f37a`; they do not define the current direction.
+The project is an early prototype. The codebase guide distinguishes
+implemented behavior from planned capabilities and records the scope of
+previous verification.

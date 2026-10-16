@@ -1,269 +1,230 @@
-# Design: connected storage for agent navigation
+# Architecture and data model
 
-Updated: 2026-10-16. Iteration 1 is implemented after chat realignment.
-[PRD](PRD.md) states the product direction, [ITERATION-1](ITERATION-1.md)
-records the completed first implementation, and [CODEBASE](CODEBASE.md) describes
-actual code and validation limits. Section 7 remains future direction.
+pal separates original captures, model interpretations, and navigation
+information. Format 2 implements the capture/item model described here.
+Legacy format 1 remains available for earlier text, article, and lint flows.
 
-## 1. End-to-end responsibilities
+[Product direction](PRD.md) explains the use cases.
+[The codebase guide](CODEBASE.md) maps the design to modules.
+
+## 1. Responsibilities
 
 ```text
-Owner / app / agent
-    -> pal preserves the capture
-    -> pal interprets useful parts
-    -> pal writes records, connections, and navigation information
-    -> an external agent searches and reads using its own tools
-    -> the agent follows evidence and answers the owner's question
+Person / application / agent
+    -> engine accepts and preserves text
+    -> model proposes useful items
+    -> engine validates and writes records
+    -> storage maintains navigation and history
+    -> external agent searches, reads, and reasons
 ```
 
-During later organization, pal can inspect existing records to decide how
-incoming material relates to them. That maintenance lookup is separate from
-the external agent's question-specific investigation.
+CLI and MCP share engine functions. The model proposes content and temporary
+references; the engine controls canonical IDs, paths, validation, and writes.
 
-Original captures remain available. Items are interpretations, and maintained
-knowledge pages are explanations with sources. Reading lists and project
-collections select from the same records.
+Question-specific retrieval belongs to the external agent. Looking up existing
+records while organizing new input is a separate maintenance concern planned
+for the next milestone.
 
-## 2. First-iteration layout
+## 2. Store layout
 
 ```text
 brain/
   captures/YYYY/MM/DD/
-    <capture-id>.txt                 supplied text, preserved exactly
-    <capture-id>.md                  metadata, source origin, processing state
+    <capture-id>.txt          original text received by the engine
+    <capture-id>.md           metadata, origin, state, item IDs
   items/
-    <item-id>--<slug>.md             interpreted content and metadata
+    <item-id>--<slug>.md       interpreted content and references
   .operations/
-    <capture-id>.json                durable interpretation/recovery plan
-  SCHEMA.md                         store guide and format marker
-  INDEX.md                          derived navigation catalog
-  LOG.md                            operation history
-  .gitattributes                    preserve payload bytes in Git (-text)
-  .gitignore                        exclude the OS-held write lock
-  .git/                             recorded history
+    <capture-id>.json         durable plan and recovery state
+    write.lock               ignored OS-held writer lock
+  SCHEMA.md                  navigation guide; store_format: 2
+  INDEX.md                   derived descriptive catalog
+  LOG.md                     operation events
+  .gitattributes             preserve original payload bytes in Git
+  .gitignore                 exclude the lock
+  .git/                      capture and organization history
 ```
 
-The text and metadata files together represent one capture. Updating its
-processing state does not rewrite the original. All catalog paths are relative
-to the brain root. IDs identify records; descriptive filenames may change.
-Dates use the existing UTC partitioning convention.
+The text and metadata files together represent one capture. Metadata can
+change without rewriting the original. Paths in records and catalogs are
+relative to the brain root; date partitions use UTC.
 
-The guide carries `store_format: 2` in frontmatter. Unversioned stores
-are legacy format 1. Iteration 1 uses explicitly initialized format-2 stores;
-there is no implicit conversion of existing data.
+IDs remain stable across descriptive filename changes. The current writer
+does not implement arbitrary reorganization or migration.
 
-The recovery record is internal operation state. It is excluded from knowledge
-catalogs and is not another user-facing copy of an item. It records the
-validated proposal, allocated IDs, destinations, and completed steps so a
-partial write can resume without generating a replacement interpretation.
+## 3. Record model
 
-## 3. Minimum records
+Shared contracts live in [pal/models.py](../pal/models.py).
+Markdown records use YAML frontmatter and readable content.
 
-Shared models in pal/models.py define the engine/storage/interface contracts.
-Metadata uses YAML frontmatter; item bodies remain Markdown content.
-
-| Record | Required information |
+| Record | Important fields |
 |---|---|
-| Capture | `id`, `record_type: capture`, `received_at`, `entry_route`, `payload_path`, `payload_sha256`, `processing_state`, `item_ids` |
-| Capture origin | Optional known source channel/key, original time, or speaker information; unknowns remain absent |
-| Item | `id`, `record_type: item`, `kind`, `title`, short `description`, readable body, timestamps, `contexts`, `sources`, `relations`, `interpretation_origin` |
-| Source reference | `capture_id` and exact supporting `quote` from its preserved payload |
-| Item relationship | `kind`, `target_id`, and `basis` distinguishing source-expressed and inferred connections |
-| Kind-specific state | Reading progress on a reading item; tentative wording/uncertainty on an idea |
+| Capture | id, received_at, entry_route, origin, payload_path, payload_sha256, processing_state, item_ids |
+| Item | id, kind, title, description, body, timestamps, contexts, sources, relations, interpretation_origin |
+| Source reference | capture_id and exact supporting quote |
+| Relationship | target_id, kind, and basis: source or inferred |
+| Reading entry | Optional reading_status and URL |
+| Interpretation context | Optional uncertainty and attributed_to |
 
-Start with useful kinds such as `reading`, `idea`, and `note`, allowing
-unresolved material to remain only in the capture. Context labels are not
-folder destinations or entity identities. Project Y need not become a separate
-project record in the first iteration.
+Captures and items use `record_type: capture` and `record_type: item`.
+Item kinds currently include `reading`, `idea`, and `note`. Contexts are
+topic/project labels; they do not force exclusive folders or separate project
+entities.
 
-For reading entries, `reading_status` is separate from capture processing
-state. The interpreter can report unread, reading, finished, or archived when
-supported by the capture; otherwise it stays unknown. The initial reading
-intention starts unread. Progress updates across captures remain Iteration 2;
-the legacy status enum is unchanged. A supplied URL must occur literally in
-the capture; source support for other semantics still needs human assessment.
+Reading progress is distinct from processing state. The interpreter can
+report `unread`, `reading`, `finished`, or `archived` when supported by the
+capture; otherwise progress remains unknown. Cross-capture progress updates
+are not implemented.
 
-A model produces temporary item keys, content, source quotes, and proposed
-connections. The engine allocates canonical IDs and resolves those keys.
-It checks required fields, path containment, exact excerpt matches, and
-relationship endpoints before applying a proposal. Invalid proposals leave
-the original intact with incomplete organization.
+Entry route and source origin are separate. For example, MCP can deliver a
+conversation excerpt originally written elsewhere. Unknown source details
+remain absent. Attribution identifies a speaker in the supplied material;
+interpretation origin identifies how a derived item was produced.
 
-Repeated excerpts may be ambiguous locations; a quote check is only a minimal
-traceability check. Structured message references or exact ranges can be
-introduced with the relevant import format.
+### Proposal validation
 
-Authorship and interpretation origin are distinct. A supplied speaker label
-is recorded provenance, not verified identity. A well-formed source reference
-does not establish that an interpretation is faithful or true.
+A model returns temporary item keys, useful content, quotes, and relationships.
+The engine checks:
 
-## 4. Save, failure, and retry
+- Unique keys and nonblank content.
+- Nonempty quotes that occur in the preserved text.
+- Literal source support for any supplied URL.
+- Valid within-capture relationship targets.
+- Reading progress only on reading entries.
+- Canonical IDs and contained record paths during persistence.
 
-The essential save input is the supplied text. Optional context/origin fields
-must not become a form the owner has to complete.
+It then assigns IDs and persists a plan before materializing items.
+A capture can produce zero items; extraction is not forced.
 
-Preserve the string received at the engine boundary as UTF-8, including its
-whitespace, Unicode, and line endings. Empty-input validation may inspect a
-trimmed copy; it must not replace the stored payload. This guarantee does not
-recover information an upstream app or agent already removed.
+These checks establish structure and traceability. They do not establish
+that every interpretation, attribution, or inferred connection is correct.
+Repeated quotes may also be ambiguous locations. Structured message/span
+references belong to future import work.
+
+## 4. Save lifecycle and recovery
+
+The engine preserves the received string as UTF-8, including whitespace,
+Unicode, and line endings. It does not recover information removed by an
+upstream application or an agent before submission.
 
 ```text
-Validate input and store format
-    -> persist original plus capture metadata
-    -> register pending capture and record capture acceptance
-    -> attempt interpretation
-    -> validate and persist an operation plan with stable item IDs
+Validate input and format
+    -> persist original and capture metadata
+    -> catalog pending capture, log acceptance, commit capture history
+    -> request interpretation
+    -> validate and persist plan with stable item IDs
     -> materialize items and links
-    -> update catalog, processing state, log, and Git history
+    -> update catalog, metadata, log, and organization history
 ```
 
-Capture acceptance and organization are separate events. The first iteration
-can attempt interpretation synchronously after saving; no worker is required.
-Acceptance is recorded before model work. A model/fetch failure cannot create
-a second capture through a generic fallback.
+Capture acceptance and interpretation are separate events. Interpretation
+currently runs synchronously after preservation.
 
-| Situation | Required result |
+| Failure | Result |
 |---|---|
-| Original and metadata cannot both be saved | Do not acknowledge acceptance; identify any recoverable partial files |
-| Original accepted, interpretation unavailable/invalid | Return capture ID and paths; organization is incomplete |
-| Proposal valid but item/catalog/log writing fails | Retain the plan and identify partial output; retry resumes it |
-| Git recording fails after files were saved | Report the saved content and pending history work separately |
-| No independently useful items | Organization may complete with an empty item list |
-| Retry after completion | Return existing records; no duplicate items or log events |
+| Payload or metadata cannot be saved | Capture acceptance is not reported; recoverable paths are returned where available |
+| Model unavailable or proposal invalid | Original remains available; organization is incomplete |
+| Item/catalog/log write partly completes | Saved plan and IDs are reused on retry |
+| Git commit fails after content is saved | Content and pending history are reported separately |
+| A managed file changes outside the operation | Retry reports a conflict rather than overwriting it |
+| A completed capture is retried | Existing output is returned without new active items |
 
-`processing_state` is `pending`, `incomplete`, or `complete`. Completion
-means that planned item writes and navigation/log updates are coherent.
-History completion is reported separately; a saved capture is not erased
-from the response because a commit failed. Whole-operation success requires
-all required steps, including history, to finish.
+Processing state is `pending`, `incomplete`, or `complete`.
+History state is reported separately as `committed` or `pending`.
+The result also includes the brain root, guide/index locations, original and
+capture paths, item references, and warnings.
 
-A result includes capture ID/path, payload path, processing state, item
-IDs/paths, actionable warnings, and history state. It also identifies the
-brain root and guide/index paths for an agent's existing file tools.
+A durable operation record tracks the plan and expected file hashes. Intended
+hashes are persisted before file replacement so either side of a process
+interruption can be recognized. Logical log events are idempotent.
 
-Retry targets the capture ID. A saved plan reuses its IDs; a retry before a
-valid plan exists may attempt interpretation again. Deliberate reinterpretation
-of completed records is a later versioned update operation. A fresh submission,
-even with identical words, is a new occurrence unless a future explicit source
-identity/import policy establishes otherwise.
+New writes reject unrelated staged changes. Retry permits only staged paths
+belonging to its operation and checks managed content against recorded hashes.
+An OS-held advisory lock serializes pal writers and releases on process exit;
+external editors do not participate in that lock.
 
-Per-file atomic replacement and Git commits are not a transaction across
-files. Persisted steps and deterministic catalog generation provide recovery.
-Serialize writes to a store; refuse conflicting writers rather than letting
-them race over one catalog or operation. Protect unrelated staged Git changes;
-new saves reject unrelated staged changes before writing. Retry accepts only
-staged paths belonging to its recorded operation and checks canonical file
-hashes before resuming. An OS-held advisory lock serializes format-2 writers
-and releases on process exit; it does not coordinate external editors.
+Recovery is resumable application, not a transaction with multi-file rollback.
+Per-file atomic replacement and Git commits do not make the whole store atomic.
 
-## 5. Agent-facing navigation
+### Identity across repeated input
 
-### SCHEMA.md: concise orientation
+A retry targets a capture ID and reuses a validated plan. Before a valid plan
+exists, retry can request interpretation again.
 
-The guide explains the record kinds, layout, relative-path base, metadata,
-source/relationship resolution, processing states, and legacy boundary.
-It points to the catalog and tells an unfamiliar agent where to begin.
+A fresh submission is a new occurrence, even when its text matches a previous
+capture. Resource matching, repeat-import identity, and deliberate
+reinterpretation of completed items require later update contracts.
 
-Record content is evidence to inspect. Generated interpretation, supplied
-words, and owner corrections remain distinguishable.
+## 5. Agent navigation
 
-### INDEX.md: maintained directory
+`SCHEMA.md` is the entry point. It explains paths, record kinds, states,
+source references, and relationship resolution.
 
-Each entry supplies ID, record type/kind, title, short description, contexts,
-processing state where relevant, and relative path. Pending captures are
-listed too. A capture entry points to its metadata, which points to the payload.
+`INDEX.md` is derived from the records and includes IDs, kinds, titles,
+short descriptions, context labels, processing states, and relative paths.
+Pending captures and partial items remain visible.
 
-For example:
+An illustrative entry:
 
 ```text
 I2 | item/idea | Possible application of Book X to Project Y
-Description: Owner wondered whether the approach could help; application untested.
+Description: The approach might help; no concrete application is recorded.
 Contexts: Project Y
 Path: items/I2--book-x-project-y.md
 ```
 
-Keep detail, sources, and connections in the opened record. The catalog is
-derived from records and can be rebuilt. Generation uses stable IDs, not
-append-only duplicate lines. Descriptions retain uncertainty rather than
-presenting tentative thoughts as decisions.
+Full content, source excerpts, and connections stay in the opened record.
+An agent searches the catalog or files, reads relevant items, resolves related
+IDs, and inspects original captures before synthesizing an answer.
 
-### Agent workflow
+Reading lists select reading items and progress. Project collections can span
+several kinds. These views reuse records rather than creating separate copies.
 
-```text
-Read guide -> search index and/or files -> read chosen item
-           -> resolve related IDs -> inspect original capture -> answer
-```
+The catalog is rebuildable, and the current implementation scans canonical
+records when regenerating it. Large-store indexing and partitioned catalogs
+remain future work.
 
-The agent uses its own filesystem/search tools. Reading lists can be assembled
-from item kind and reading progress; project collections use contexts and
-connections. Existing convenience tools may remain without becoming a required
-retrieval engine.
-
-An index is not file access. The first complete flow assumes a local agent
-with filesystem access. An MCP-only client needs a future thin file/resource
-bridge or another authorized access tool. Merely returning local paths does
-not provide that access.
-
-Start with one searchable catalog. Split catalogs or add derived indexes only
-when scale or observed search failures justify it.
+File access is separate from navigation metadata. An MCP-only client needs a
+filesystem/resource bridge; paths in a capture result do not grant access.
 
 ## 6. Legacy compatibility
 
-Format 1 consists of unversioned `raw/`, `inbox/`, `reading-list/`, and
-`wiki/` records. Preserve them and their IDs. Do not label old model-rewritten
-notes as verbatim original captures.
+Unversioned stores are format 1. They contain `raw/`, `inbox/`,
+`reading-list/`, and `wiki/` records with earlier metadata conventions.
 
-- Format-2 initialization uses `pal init --format-version 2` and requires a new empty directory.
-- Existing initialization and legacy capture/link behavior remain compatible.
-- New-format text preserves embedded URLs without routing into legacy fetching.
-- Legacy-only article enrichment and lint are refused on format 2 before
-  mutation; they do not silently claim coverage of the new records.
-- Reading-list projection supports both formats; format 2 includes IDs, paths,
-  sources, contexts, reading progress, and processing state. Legacy responses
-  retain their existing shape.
-- Existing custom guides are not overwritten during a routine initialization.
-- Actual migration, imported source versions, and historical repair are
-  separate future work, not automatic startup operations.
+Format 2 is explicitly initialized with `pal init --format-version 2` in a
+new empty directory. Existing data and custom guides are not converted.
 
-The old lint scanner only understands raw/inbox candidates and has known
-validation/application gaps. It must not write to format-2 records or catalogs.
-Knowledge-page maintenance for the new format is deferred.
+- Text capture dispatches by format.
+- Reading-list projection supports both formats.
+- Embedded URLs remain text in format 2.
+- Explicit article enrichment and legacy lint are rejected on format 2
+  before mutation.
+- Legacy category bypass (`--into` / `category_hint`) is unavailable on
+  format 2; context hints use `--context` / `context_hint`.
 
-## 7. Later contextual maintenance and Jev
+Old classified notes may contain model rewriting and cannot be relabeled as
+exact original captures. Migration must account for that missing information.
 
-Organization should use incoming meaning and relevant stored context to choose
-creation, enrichment, connection, or revision. Similarity alone is insufficient
-to merge resources or overwrite an existing interpretation.
+## 7. Future contextual maintenance
 
-The discussed evolution example is the behavioral target for Iteration 2:
+The next milestone will inspect relevant existing records before choosing
+creation, enrichment, connection, or revision.
 
-| New context | Possible contextual action |
-|---|---|
-| Save Book X as a possible aid for Project Y | Create reading entry and tentative idea |
-| Explain why its interview approach might help | Enrich that idea with the new source |
-| Finish the book and record a general takeaway | Update reading progress and create reusable knowledge |
-| Decide the approach is unsuitable for Project Y | Revise the current project assessment, retaining evidence and broader takeaway |
+For example, a reading entry can gain another reason to read; a related idea
+can become more specific; a general takeaway can become reusable knowledge;
+and a later assessment can set aside a project-specific application. Earlier
+sources and changes should remain inspectable.
 
-These are illustrative outcomes, not title-specific routing rules. Original
-captures, uncertainty, disagreements, and change history remain available.
-Define how human edits and generated page sections survive before automated
-cross-capture updates. Source-grounded deletion/retention is a separate
-lifecycle decision.
+Similarity alone is insufficient for identity or revision. Matching,
+uncertainty, disagreements, human edits, and source history need explicit
+contracts before automatic cross-capture updates.
 
-Jev is a possible later decision component. Its
-[official introduction](https://docs.typesafe.ai/introduction) describes typed
-choices, scores, and yes/no probabilities. Potential pal uses include checking
-resource identity or whether new material adds to or revises an earlier view.
-This fit is a design hypothesis, not a measured result or selected dependency.
+Specialist decision components may help with bounded organization judgments.
+Jev is one candidate, not a selected dependency; see its
+[official introduction](https://docs.typesafe.ai/introduction).
+The surrounding system would still supply relevant context and control writes.
 
-A generative model can interpret/write organized content, a decision model
-can answer focused questions, and code validates/applies operations.
-Jev sees only the state provided to it; pal must supply relevant records
-([official memory example](https://docs.typesafe.ai/cookbooks/basic_memory)).
-Confidence does not remove the need to assess these decisions on relevant
-examples ([confidence documentation](https://docs.typesafe.ai/confidence)).
-No Jev integration, credentials, or provider calls are part of Iteration 1.
-
-Larger chat imports, article enrichment with preserved commentary, maintained
-wiki pages, explicit deletion, MCP-only read access, and advanced search remain
-later design work.
+Dedicated conversation imports, article enrichment in format 2, maintained
+knowledge pages, deletion semantics, and additional access/search backends
+remain later work.

@@ -16,5 +16,5 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
-# Keep project instructions in version control.
-!AGENTS.md
+# Local agent instructions; not part of the public repository.
+AGENTS.md
